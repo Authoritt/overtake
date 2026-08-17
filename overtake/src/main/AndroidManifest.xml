@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- The do-nothing notification listener whose grant is the trust anchor for the whole
+             library: once the user enables it in Settings > Notification access, it unlocks (a)
+             reading the phone's active media sessions for NowPlaying and (b) the notification stream
+             that CockpitNotifications distils into NavGuidance + CallState. Merged into the host app's
+             manifest; the host is responsible for prompting the user to grant the access. -->
+        <service
+            android:name="dev.overtake.NowPlayingListener"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>

@@ -1,0 +1,11 @@
+*.iml
+.gradle/
+/build
+/overtake/build
+/local.properties
+.idea/
+.DS_Store
+.externalNativeBuild
+.cxx
+.kotlin/
+*.apk
