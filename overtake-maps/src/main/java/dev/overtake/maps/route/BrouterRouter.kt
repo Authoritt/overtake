@@ -33,14 +33,17 @@ import kotlin.math.sin
  * Data model: BRouter routes over `.rd5` **segment tiles** on a 5°×5° world grid, downloaded on
  * demand from https://brouter.de/brouter/segments4/ into app-internal storage
  * ([segmentsDir]) as the offline area is downloaded (see [OfflineAreaDownloader]). The routing
- * **profile** (stock `fastbike`) and the tag table (`lookups.dat`) ship as app assets and are
+ * **profiles** (see [Profile]) and the tag table (`lookups.dat`) ship as app assets and are
  * extracted next to each other into [profileDir] on first use (BRouter reads `lookups.dat` from the
  * profile's own directory).
  *
- * F1 uses the STOCK `fastbike` profile as-is (faithful; F2 adds the custom moto-curvy profile).
- * Consequences to know: `fastbike` **excludes motorways** (so a rider's "avoid highways" is always
- * honored offline, but a plain "fast" offline route also won't take a motorway), and — like any
- * bike profile — it may prefer a cycleway a motorcycle can't legally use. Both are F2 concerns.
+ * F2 default = [Profile.MOTORCYCLE_CURVY] (`motorcycle_curvy.brf`): a 450cc-motorcycle profile on
+ * BRouter's car kinematic model. It fixes F1's stock-`fastbike` problems — `fastbike` bans
+ * motorways and allows bike ways, which measured a ~2x cycleway detour (Reykjavik→Keflavik 100.8 km
+ * vs the sensible ~50 km trunk). The moto profile takes the sensible highway/primary route, never
+ * routes onto cycleway/footway/path/track, and mildly prefers curvy secondary/tertiary where the
+ * time penalty is reasonable. [Profile.FASTBIKE] stays reachable via [route]'s `profile` argument
+ * as a cheap fallback/toggle. The moto profile is heuristic — its bias needs real-ride tuning.
  *
  * Internal: the offline-download orchestration ([dev.overtake.maps.route.offline.OfflineAreaDownloader])
  * moved in-lib in Stage 2 Pass 2, so nothing cross-module calls this any more — it is driven only by
@@ -48,20 +51,39 @@ import kotlin.math.sin
  */
 internal object BrouterRouter {
     private const val ASSET_DIR = "brouter"
-    private const val PROFILE_FILE = "fastbike.brf"
+
+    /**
+     * Offline routing profiles shipped as assets (each extracted side by side with [LOOKUPS_FILE],
+     * which BRouter reads from the profile's own directory).
+     *
+     * [MOTORCYCLE_CURVY] is the **default** (F2): a ~450cc-motorcycle profile built on BRouter's
+     * car kinematic model — motorway/trunk/primary/secondary/tertiary/residential allowed,
+     * cycleway/footway/path/steps/track banned — with a curvy/scenic bias toward secondary/tertiary.
+     * [FASTBIKE] is the stock BRouter bike profile, kept reachable as a cheap fallback/toggle
+     * (bans motorways, allows bike ways — i.e. F1's old behavior).
+     */
+    enum class Profile(val file: String) {
+        MOTORCYCLE_CURVY("motorcycle_curvy.brf"),
+        FASTBIKE("fastbike.brf"),
+    }
+
+    /** Profile used when a caller doesn't specify one: the F2 moto-curvy profile. */
+    val DEFAULT_PROFILE: Profile = Profile.MOTORCYCLE_CURVY
+
     private const val LOOKUPS_FILE = "lookups.dat"
     private const val ASSET_MARKER = ".assets_version"
     private const val SEGMENTS_BASE_URL = "https://brouter.de/brouter/segments4/"
     private const val USER_AGENT = "OpenCfMoto/BRouter"
 
     /**
-     * Version stamp for the extracted profile assets ([PROFILE_FILE] + [LOOKUPS_FILE]); [ensureAssets]
-     * re-extracts when it changes. In the consuming fork this was the app's `VERSION_CODE:GIT_HASH`
-     * (re-extract on every build) — but as a library the profile assets ship with and change only with
-     * THIS module, so a stable, module-owned key is both correct and cheaper. Bump it whenever the
-     * vendored `fastbike.brf` / `lookups.dat` change (F1 uses the STOCK profile, which rarely does).
+     * Version stamp for the extracted profile assets (every [Profile] file + [LOOKUPS_FILE]);
+     * [ensureAssets] re-extracts when it changes. In the consuming fork this was the app's
+     * `VERSION_CODE:GIT_HASH` (re-extract on every build) — but as a library the profile assets ship
+     * with and change only with THIS module, so a stable, module-owned key is both correct and
+     * cheaper. Bump it whenever a shipped `.brf` / `lookups.dat` changes (bumped to `/2` for F2:
+     * added `motorcycle_curvy.brf` and made it the default).
      */
-    private const val ASSET_VERSION = "overtake-maps/1"
+    private const val ASSET_VERSION = "overtake-maps/2"
 
     /** Minimal bounding box for [pruneSegments] ref-counting; the host maps its own area type to this. */
     data class Bbox(val south: Double, val west: Double, val north: Double, val east: Double)
@@ -137,9 +159,9 @@ internal object BrouterRouter {
         val marker = File(dir, ASSET_MARKER)
         val want = ASSET_VERSION
         val fresh = marker.takeIf { it.exists() }?.readText() == want &&
-            File(dir, PROFILE_FILE).exists() && File(dir, LOOKUPS_FILE).exists()
+            Profile.values().all { File(dir, it.file).exists() } && File(dir, LOOKUPS_FILE).exists()
         if (!fresh) {
-            copyAsset(ctx, PROFILE_FILE)
+            Profile.values().forEach { copyAsset(ctx, it.file) }
             copyAsset(ctx, LOOKUPS_FILE)
             marker.writeText(want)
         }
@@ -166,19 +188,21 @@ internal object BrouterRouter {
      */
     fun route(
         ctx: Context, fromLat: Double, fromLon: Double, toLat: Double, toLon: Double,
+        profile: Profile = DEFAULT_PROFILE,
     ): Route? {
         if (!hasSegmentsForRoute(ctx, fromLat, fromLon, toLat, toLon)) return null
         if (!ensureAssets(ctx)) return null
-        return runCatching { routeInternal(ctx, fromLat, fromLon, toLat, toLon) }
+        return runCatching { routeInternal(ctx, fromLat, fromLon, toLat, toLon, profile) }
             .onFailure { MapsLog.w("route", "[route] BRouter route error: ${it.message}") }
             .getOrNull()
     }
 
     private fun routeInternal(
         ctx: Context, fromLat: Double, fromLon: Double, toLat: Double, toLon: Double,
+        profile: Profile,
     ): Route? {
         val rc = RoutingContext()
-        rc.localFunction = File(profileDir(ctx), PROFILE_FILE).absolutePath
+        rc.localFunction = File(profileDir(ctx), profile.file).absolutePath
         val waypoints = ArrayList<OsmNodeNamed>(2).apply {
             add(waypoint(fromLat, fromLon, "from"))
             add(waypoint(toLat, toLon, "to"))

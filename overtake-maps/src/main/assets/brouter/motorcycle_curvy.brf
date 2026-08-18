@@ -1,0 +1,404 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2016-2024 the BRouter authors (Arndt Brenschede et al.) -- derived from the
+#   stock `car-vario.brf` shipped with BRouter (https://github.com/abrensch/brouter, MIT).
+# Copyright (C) 2026 Authoritt and the Overtake contributors -- motorcycle-curvy adaptation.
+#
+# =============================================================================================
+# motorcycle_curvy -- a curvy/scenic routing profile for a licensed ~450 cc motorcycle.
+# =============================================================================================
+#
+# WHY THIS PROFILE EXISTS
+#   The stock bike profiles route a motorbike wrong:
+#     * `fastbike` / `trekking` set `validForBikes` + ban motorways and *allow* cycleways. On a
+#       real road network (measured Reykjavik->Keflavik) that yields a ~2x detour down cycleways
+#       instead of the sensible ~50 km trunk road.
+#     * the stock `moped` class also *bans motorways outright* (its access list starts at `trunk`)
+#       and is labelled experimental ("DO NOT USE FOR ACTUAL NAVIGATION").
+#   A licensed 450 cc bike is a motor vehicle: it MAY use motorway/trunk/primary/secondary/
+#   tertiary/residential and MUST NOT be routed onto cycleway/footway/path/steps/track.
+#
+# DESIGN -- two decisions:
+#
+#   1. COST MODEL = BRouter's KinematicModel (same as stock `car-vario`), NOT the bike/standard
+#      model. Rationale:
+#        - Access: car-vario's `caraccess` already grants exactly the motor-vehicle classes and
+#          bans cycleway/footway/path/steps/track by construction (any class not in the access
+#          list gets accessspeedlimit=0 -> maxspeed=0 -> costfactor=10000 = forbidden). We also
+#          fold in explicit `motorcycle=` tag handling (from stock `moped`) so a
+#          `motorcycle=no|yes` tag is honoured.
+#        - Realism: the kinematic model derives travel *time* from per-way `maxspeed` + physics
+#          (mass, drag, curve slow-down, elevation). Long hauls therefore naturally take the fast
+#          road -- which is what robustly kills the 2x cycleway-detour bug -- while keeping a
+#          sensible real route (a heavy time penalty caps any joyride). Elevation is handled
+#          physically inside the model (climb costs energy/time), so no separate uphill/downhill
+#          cost is needed.
+#      NOTE: the KinematicModel ignores the standard-model `turncost` variable; the analogous
+#      lever here is `turnAngleDecayTime` (see below).
+#
+#   2. CURVY / SCENIC BIAS (the GraphHopper `curvature.json` idea, expressed in BRouter's DSL).
+#      BRouter has no per-way curvature tag, so we approximate "curvy & scenic" the way the
+#      motorcycle community does -- prefer the lower, twistier road classes over dead-straight
+#      motorway/trunk -- with two knobs, both bounded so the route stays SENSIBLE (curvy-biased,
+#      not a 3x joyride):
+#        (a) per-class `costfactor` surcharge added to fast/straight roads (`curvefactor` below):
+#            motorway > trunk > primary, while secondary/tertiary carry ZERO surcharge. Combined
+#            with the kinematic time cost (which already favours fast roads) this nets out to:
+#            "take the scenic secondary/tertiary when the extra time is modest, otherwise stay on
+#            the fast road". The surcharges are distance-proportional and bounded (<=1.0 per metre
+#            vs. a ~1.0/metre baseline time cost), calibrated (see the dials below) to sit below
+#            the measured "flip to a big detour" threshold so a much-longer joyride never wins.
+#        (b) `turnAngleDecayTime` lowered from the car default (5 s) to 2.5 s: a bike carries far
+#            more corner speed than a car, so a *series* of bends is penalised less. This stops
+#            the model from avoiding a twisty road -- i.e. it lets us actually enjoy the curves we
+#            biased towards in (a), without letting hairpins be taken at silly speeds.
+#
+# HEURISTIC -- NEEDS REAL-RIDE TUNING. The class surcharges, vmax and turn-decay are hand-picked
+# and verified only against JVM route sanity checks (distance + road choice), not against real
+# rides. Treat the numbers as a starting point: `motorway_penalty` / `trunk_penalty` /
+# `secondary`/`tertiary` surcharges and `vmax` are the dials to turn once ride data exists.
+#
+
+---model:btools.router.KinematicModel
+
+---context:global
+
+# Motor-vehicle profile (selects the car access + kinematic time model).
+assign validForCars = true
+
+# ---- behaviour switches -----------------------------------------------------------------------
+assign avoid_toll        = false  # %avoid_toll% | Avoid toll roads | boolean
+assign avoid_unpaved     = true   # %avoid_unpaved% | Avoid unpaved roads if possible (default on: road bike) | boolean
+assign avoid_motorways   = false  # %avoid_motorways% | Hard-avoid motorways (beyond the soft curvy bias) | boolean
+assign use_offroad       = false  # %use_offroad% | Allow highway=track/road (default off: no dirt for a road bike) | boolean
+
+assign consider_river    = false  # %consider_river% | Prefer routes along rivers / lakes | boolean
+assign consider_forest   = false  # %consider_forest% | Prefer routes through forest / parks | boolean
+assign consider_town     = true   # %consider_town% | Bypass big towns where possible (scenic) | boolean
+
+# ---- curvy / scenic bias dials (per-metre surcharge on straight/fast classes) -----------------
+# 0 == no surcharge (preferred). Keep motorway > trunk > primary; secondary/tertiary == 0. These
+# are added on top of the kinematic time cost (baseline ~1.0/m at cruising speed). CALIBRATED on
+# JVM route sweeps: at these levels a route swaps trunk for a *parallel* curvy secondary/tertiary
+# at ~zero extra distance (measured Reykjavik->Selfoss: ~15% of the trunk becomes secondary with
+# +0.4 km), yet the fast road still wins whenever the only curvy alternative is a big detour
+# (measured Reykjavik->Keflavik stays ~49 km on the trunk, NOT the 100 km bike detour). Empirical
+# "flip to a +38% scenic detour" threshold was trunk_penalty ~= 0.8, so we sit safely below it.
+# TUNE WITH REAL RIDE DATA -- raise for more scenic detours, lower for more direct.
+assign motorway_penalty  = 1.0    # %motorway_penalty% | Surcharge on motorway (straight/boring) | number
+assign trunk_penalty     = 0.6    # %trunk_penalty% | Surcharge on trunk | number
+assign primary_penalty   = 0.3    # %primary_penalty% | Surcharge on primary | number
+assign secondary_penalty = 0.0    # %secondary_penalty% | Surcharge on secondary (scenic, preferred) | number
+assign tertiary_penalty  = 0.0    # %tertiary_penalty% | Surcharge on tertiary (scenic, preferred) | number
+
+# ---- kinematic model parameters: a ~450 cc motorcycle + rider -------------------------------
+# Lighter and slipperier than a car, so it accelerates hard out of corners (favours twisties).
+assign vmax             = 115    # %vmax% | Target cruising speed cap (km/h) | number
+assign totalweight      = 280    # %totalweight% | Bike + rider + gear (kg) | number
+assign f_roll           = 55     # %f_roll% | Rolling friction (N) ~= Cr*m*g, moto tyres | number
+assign f_air            = 0.25   # %f_air% | Drag 0.5*cw*A*rho, rider tucked-ish (N/(m/s)^2) | number
+assign f_recup          = 0      # %f_recup% | No regen on a petrol bike | number
+assign p_standby        = 100    # %p_standby% | Idle/aux power (W) | number
+assign recup_efficiency = 0.5    # %recup_efficiency% | (unused: no regen) | number
+
+# Curve slow-down decay (the kinematic stand-in for `turncost`): lower than the car default (5)
+# because a bike carries corner speed -> a series of bends costs less -> twisties stay attractive.
+assign turnAngleDecayTime = 2.5  # %turnAngleDecayTime% | Curve slow-down memory (s) | number
+
+# Turn instructions.
+assign turnInstructionMode = 1   # %turnInstructionMode% | Turn-instruction style | [0=none, 1=auto-choose, 2=locus-style, 3=osmand-style, 4=comment-style, 5=gpsies-style, 6=orux-style, 7=locus-old-style]
+
+# A* pass-1 overestimate (kept from car-vario).
+assign pass1coefficient = 1.3
+
+
+---context:way   # following code refers to way-tags
+
+# classifier constants
+assign classifier_none  = 1
+assign classifier_ferry = 2
+
+assign is_avoided_toll_road and avoid_toll toll=yes
+assign is_avoided_motorway  and avoid_motorways highway=motorway|motorway_link
+
+assign isresidentialorliving = or highway=residential|living_street living_street=yes
+
+#
+# logical motor-vehicle access -- car classes.
+# NOTE: cycleway/footway/path/steps/pedestrian/bridleway are absent from this list, so they fall
+# through to 0 (no access) -> maxspeed 0 -> costfactor 10000 = forbidden. track/road only when
+# use_offroad. This is exactly "a bike MAY use motor roads, MUST NOT use cycleway/foot/path/track".
+#
+assign caraccess =
+       switch motorcar=
+              switch motor_vehicle=
+                     switch vehicle=
+                            switch access=
+                                   switch highway=motorway|motorway_link       1
+                                   switch highway=trunk|trunk_link             1
+                                   switch highway=primary|primary_link         1
+                                   switch highway=secondary|secondary_link     1
+                                   switch highway=tertiary|tertiary_link       1
+                                   switch highway=unclassified                 1
+                                   switch and highway=track use_offroad        1
+                                   switch and highway=road use_offroad         1
+                                   switch route=ferry                          1
+                                   switch isresidentialorliving                1
+                                   switch highway=service                      1
+                                   0
+                                   access=yes|permissive|designated|destination
+                            vehicle=yes|designated|destination
+                     motor_vehicle=yes|permissive|designated|destination
+              motorcar=yes|permissive|designated|destination
+
+#
+# explicit `motorcycle=` tag overrides car access (borrowed from stock `moped`): honour a
+# motorcycle-specific yes/no where mappers set it.
+#
+assign motoaccess =
+       switch motorcycle=
+              caraccess
+              motorcycle=yes|permissive|designated|destination
+
+assign caraccess_destination
+       switch motorcar=
+              switch motor_vehicle=
+                     switch vehicle=
+                            access=destination
+                            vehicle=destination
+                     motor_vehicle=destination
+              motorcar=destination
+
+#
+# for any change in initialclassifier, initialcost is added once
+#
+assign initialclassifier =
+     if route=ferry then classifier_ferry
+     else classifier_none
+
+assign initialcost =
+     if      ( and highway= not route=ferry ) then 10000
+     else if ( equal initialclassifier classifier_ferry ) then 10000
+     else 0
+
+assign accessspeedlimit = if motoaccess then 999 else 0
+
+assign isbadoneway = if reversedirection=yes then ( if oneway= then junction=roundabout else oneway=yes|true|1 ) else oneway=-1
+assign onewayspeedlimit = if isbadoneway then 0 else 999
+
+assign islinktype = highway=motorway_link|trunk_link|primary_link|secondary_link|tertiary_link
+
+# ---- per-way maxspeed (fed to the KinematicModel as the speed limit) ----------------------------
+assign maxspeed_surface =
+  switch or surface= surface=paved|asphalt|concrete 999
+  switch surface=paving_stones|cobblestone|sett 40
+  switch surface=fine_gravel ( switch avoid_unpaved 3 20 )
+  switch avoid_unpaved 1 3
+
+assign maxspeed_tracktype =
+  switch tracktype= 999
+  switch tracktype=grade1 50
+  switch tracktype=grade2 ( switch avoid_unpaved 2 10 )
+  1
+
+# Implicit per-class speed caps (km/h). A 450 cruises ~115 (capped by vmax); minor roads slower.
+assign maxspeed_implicit =
+  switch highway=motorway                  999
+  switch highway=motorway_link             120
+  switch highway=trunk                     130
+  switch highway=trunk_link                100
+  switch highway=primary|primary_link      100
+  switch highway=secondary|secondary_link   90
+  switch highway=tertiary|tertiary_link     80
+  switch highway=unclassified               60
+  switch route=ferry                        10
+  switch isresidentialorliving              30
+  switch highway=service                    20
+  switch highway=track|road switch tracktype=grade1 30 5
+  0
+
+assign maxspeed_forward =
+  switch maxspeed:forward=50 50
+  switch maxspeed:forward=30 30
+  switch maxspeed:forward=10 10
+  switch maxspeed:forward=20 20
+  switch maxspeed:forward=40 40
+  switch maxspeed:forward=60 60
+  switch maxspeed:forward=70 70
+  switch maxspeed:forward=80 80
+  switch maxspeed:forward=90 90
+  switch maxspeed:forward=100 100
+  switch maxspeed:forward=110 110
+  switch maxspeed:forward=120 120
+  switch maxspeed:forward=130 130
+  switch maxspeed:forward=urban 50
+  switch maxspeed:forward=rural 100
+  999
+
+assign maxspeed_backward =
+  switch maxspeed:backward=50 50
+  switch maxspeed:backward=30 30
+  switch maxspeed:backward=10 10
+  switch maxspeed:backward=20 20
+  switch maxspeed:backward=40 40
+  switch maxspeed:backward=60 60
+  switch maxspeed:backward=70 70
+  switch maxspeed:backward=80 80
+  switch maxspeed:backward=90 90
+  switch maxspeed:backward=100 100
+  switch maxspeed:backward=110 110
+  switch maxspeed:backward=120 120
+  switch maxspeed:backward=130 130
+  switch maxspeed:backward=urban 50
+  switch maxspeed:backward=rural 100
+  999
+
+assign maxspeed_explicit =
+  switch maxspeed=50 50
+  switch maxspeed=30 30
+  switch maxspeed=10 10
+  switch maxspeed=20 20
+  switch maxspeed=40 40
+  switch maxspeed=60 60
+  switch maxspeed=70 70
+  switch maxspeed=80 80
+  switch maxspeed=90 90
+  switch maxspeed=100 100
+  switch maxspeed=110 110
+  switch maxspeed=120 120
+  switch maxspeed=130 130
+  switch maxspeed=urban 50
+  switch maxspeed=rural 100
+  if reversedirection=yes then maxspeed_backward else maxspeed_forward
+
+assign maxspeed =
+  min onewayspeedlimit
+  min accessspeedlimit
+  min maxspeed_explicit
+  min maxspeed_implicit
+  min maxspeed_surface maxspeed_tracktype
+
+# ---- scenic penalties (optional, off by default except town) -----------------------------------
+assign no_river_penalty
+   switch consider_river
+     switch estimated_river_class=  10
+     switch estimated_river_class=1  1.3
+     switch estimated_river_class=2  1
+     switch estimated_river_class=3  0.7
+     switch estimated_river_class=4  0.4
+     switch estimated_river_class=5  0.1
+     switch estimated_river_class=6  0 99 0
+
+assign no_forest_penalty
+   switch consider_forest
+     switch estimated_forest_class=  10
+     switch estimated_forest_class=1  0.5
+     switch estimated_forest_class=2  0.4
+     switch estimated_forest_class=3  0.25
+     switch estimated_forest_class=4  0.15
+     switch estimated_forest_class=5  0.1
+     switch estimated_forest_class=6  0 99 0
+
+assign town_penalty
+   switch consider_town
+     switch estimated_town_class=  0
+     switch estimated_town_class=1  0.3
+     switch estimated_town_class=2  0.6
+     switch estimated_town_class=3  0.9
+     switch estimated_town_class=4  1.0
+     switch estimated_town_class=5  1.1
+     switch estimated_town_class=6  1.3 99 0
+
+# ---- the curvy/scenic surcharge: cheap on twisty classes, dearer on straight fast roads --------
+assign curvefactor =
+  switch highway=motorway|motorway_link      motorway_penalty
+  switch highway=trunk|trunk_link            trunk_penalty
+  switch highway=primary|primary_link        primary_penalty
+  switch highway=secondary|secondary_link    secondary_penalty
+  switch highway=tertiary|tertiary_link      tertiary_penalty
+  switch highway=unclassified                0.2
+  switch isresidentialorliving               0.5
+  switch highway=service                     0.7
+  0.2
+
+assign costfactor =
+  if ( equal maxspeed 0 ) then 10000
+  else if is_avoided_toll_road then 10000
+  else if is_avoided_motorway then 10
+  else min 9999
+  add town_penalty
+  add no_forest_penalty
+  add no_river_penalty
+  curvefactor
+
+# Keep the kinematic model moving on fast roads (no crawling a motorway/trunk).
+assign minspeed =
+    switch highway=motorway|motorway_link|trunk  75 0
+
+# ---- way priorities used for voice-hint generation (from car-vario) ----------------------------
+assign priorityclassifier =
+  if      ( highway=motorway                  ) then  30
+  else if ( highway=motorway_link             ) then  29
+  else if ( highway=trunk                     ) then  28
+  else if ( highway=trunk_link                ) then  27
+  else if ( highway=primary                   ) then  26
+  else if ( highway=primary_link              ) then  25
+  else if ( highway=secondary                 ) then  24
+  else if ( highway=secondary_link            ) then  23
+  else if ( highway=tertiary                  ) then  22
+  else if ( highway=tertiary_link             ) then  21
+  else if ( highway=unclassified              ) then  20
+  else if ( isresidentialorliving             ) then  6
+  else if ( highway=service                   ) then  6
+  else if ( highway=track                     ) then if tracktype=grade1 then 4 else 2
+  else if ( highway=bridleway|road            ) then  2
+  else 0
+
+assign isgoodoneway = if reversedirection=yes then oneway=-1
+                      else if oneway= then junction=roundabout else oneway=yes|true|1
+assign isroundabout = junction=roundabout
+assign isgoodforcars = if greater priorityclassifier 6 then true
+                  else if or isresidentialorliving highway=service then true
+                  else if ( and highway=track tracktype=grade1 ) then true
+                  else false
+
+assign classifiermask add          isbadoneway
+                      add multiply isgoodoneway   2
+                      add multiply isroundabout   4
+                      add multiply islinktype     8
+                      add multiply isgoodforcars 16
+                      add multiply isresidentialorliving 32
+                          multiply caraccess_destination 64
+
+---context:node  # following code refers to node tags
+
+assign caraccess =
+       switch motorcar=
+              switch motor_vehicle=
+                     switch vehicle=
+                            switch access=
+                                   not barrier=gate|bollard|lift_gate|cycle_barrier
+                                   access=yes|permissive|designated|destination
+                            vehicle=yes|permissive|designated|destination
+                     motor_vehicle=yes|permissive|designated|destination
+              motorcar=yes|permissive|designated|destination
+
+assign motoaccess =
+       switch motorcycle=
+              caraccess
+              motorcycle=yes|permissive|designated|destination
+
+assign initialcost =
+       switch and avoid_toll barrier=toll_booth 1000000
+       switch motoaccess
+              0
+              1000000
+
+assign maxspeed =
+       if or crossing=traffic_signals highway=traffic_signals
+       then
+         switch greater way:priorityclassifier 24 5
+         switch greater way:priorityclassifier 22 3
+         switch greater way:priorityclassifier 20 1
+         0
+       else if railway=level_crossing then 0
+       else 999
