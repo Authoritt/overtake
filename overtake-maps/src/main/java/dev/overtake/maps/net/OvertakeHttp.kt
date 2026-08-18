@@ -5,6 +5,8 @@ package dev.overtake.maps.net
 
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -77,7 +79,16 @@ object OvertakeHttp {
         readTimeoutMs: Int = 10_000,
         accept: String = "application/json",
         maxBytes: Int = MAX_RESPONSE_BYTES,
-    ): String = TODO("Stage 2: move AppHttp.getText mechanics in")
+    ): String {
+        val conn = open(url).apply {
+            requestMethod = "GET"
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
+            setRequestProperty("User-Agent", userAgent)
+            setRequestProperty("Accept", accept)
+        }
+        return conn.readOrThrow(maxBytes)
+    }
 
     /** POST an application/x-www-form-urlencoded body (Overpass). */
     fun postForm(
@@ -86,7 +97,19 @@ object OvertakeHttp {
         connectTimeoutMs: Int = 20_000,
         readTimeoutMs: Int = 25_000,
         maxBytes: Int = MAX_RESPONSE_BYTES,
-    ): String = TODO("Stage 2: move AppHttp.postForm mechanics in")
+    ): String {
+        val conn = open(url).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
+            setRequestProperty("User-Agent", userAgent)
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        }
+        conn.outputStream.bufferedWriter().use { it.write(formBody) }
+        return conn.readOrThrow(maxBytes)
+    }
 
     /** POST a JSON body (OpenRouteService directions with avoids / alternatives). */
     fun postJson(
@@ -97,8 +120,75 @@ object OvertakeHttp {
         accept: String = "application/json, application/geo+json",
         maxBytes: Int = MAX_RESPONSE_BYTES,
         extraHeaders: Map<String, String> = emptyMap(),
-    ): String = TODO("Stage 2: move AppHttp.postJson mechanics in")
+    ): String {
+        val conn = open(url).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
+            setRequestProperty("User-Agent", userAgent)
+            setRequestProperty("Accept", accept)
+            setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            for ((k, v) in extraHeaders) setRequestProperty(k, v)
+        }
+        conn.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(jsonBody) }
+        return conn.readOrThrow(maxBytes)
+    }
 
     /** Open a raw connection (the osmdroid tile fetch pins through here). */
-    fun openUrl(url: String): HttpURLConnection = TODO("Stage 2: move AppHttp.openUrl mechanics in")
+    fun openUrl(url: String): HttpURLConnection = open(url)
+
+    /** URL-encode a query value (UTF-8), for building request URLs / form bodies. */
+    fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    /**
+     * Open [url] over the host's pinned [android.net.Network] when one is supplied, else the process
+     * default. `Network.openConnection` binds the returned connection to THAT network's socket factory
+     * and DNS resolver internally — so the request rides the host's cellular pin even while the process
+     * default route is the bike's internet-less Wi‑Fi (the OkHttp path in later stages must set
+     * socketFactory + DNS by hand to achieve the same; a raw URLConnection gets it from the Network).
+     */
+    private fun open(url: String): HttpURLConnection {
+        val u = URL(url)
+        val net = networkProvider?.invoke()
+        val conn = net?.openConnection(u) ?: u.openConnection()
+        return conn as HttpURLConnection
+    }
+
+    private fun HttpURLConnection.readOrThrow(maxBytes: Int): String {
+        try {
+            val code = responseCode
+            if (code !in 200..299) {
+                // Drain the error stream so the connection can be reused/closed cleanly.
+                runCatching { errorStream?.readBoundedText(maxBytes) }
+                val retryable = code == 429 || code in 500..599
+                val msg = when {
+                    code == 429 -> "Map service is busy (rate limited) — try again shortly"
+                    code in 500..599 -> "Map service temporarily unavailable (HTTP $code)"
+                    else -> "Request failed (HTTP $code)"
+                }
+                throw HttpException(code, msg, retryable)
+            }
+            return inputStream.readBoundedText(maxBytes)
+        } finally {
+            disconnect()
+        }
+    }
+
+    private fun java.io.InputStream.readBoundedText(maxBytes: Int): String {
+        // HttpURLConnection transparently handles gzip when we don't set Accept-Encoding.
+        val out = StringBuilder()
+        reader(Charsets.UTF_8).use { r ->
+            val buf = CharArray(16 * 1024)
+            var total = 0
+            while (true) {
+                val n = r.read(buf)
+                if (n < 0) break
+                total += n
+                if (total > maxBytes) throw IOException("Response too large")
+                out.append(buf, 0, n)
+            }
+        }
+        return out.toString()
+    }
 }
