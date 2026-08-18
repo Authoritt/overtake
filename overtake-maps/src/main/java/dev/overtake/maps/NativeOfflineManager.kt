@@ -5,9 +5,11 @@ package dev.overtake.maps
 
 import android.content.Context
 import dev.overtake.maps.render.GpxOsmdroid
+import dev.overtake.maps.render.MapsforgeController
 import dev.overtake.maps.route.offline.MapOfflineManager
 import dev.overtake.maps.route.offline.OfflineAreaDownloader
 import dev.overtake.maps.route.offline.OfflineAreasStore
+import java.io.File
 
 /**
  * The [OfflineManager] the library hands back from [MapProvider.Native]. Holds the app [context]
@@ -62,4 +64,31 @@ internal class NativeOfflineManager(
     override fun rasterCacheBytes(): Long = GpxOsmdroid.rasterCacheBytes(config.filesDir)
 
     override fun clearRasterCache() = GpxOsmdroid.clearRasterCache(config.filesDir)
+
+    // --- Mapsforge offline VECTOR `.map` catalog. The install dir + file listing are owned by
+    // [MapsforgeController] (the SINGLE definition of `<filesDir>/mapsforge`, shared with the render
+    // path); browse/suggest/download delegate to the extracted engines. ---
+
+    override fun hasMapsforgeMaps(): Boolean = MapsforgeController.hasMaps(config.filesDir)
+
+    override fun installedMapsforgeMaps(): List<File> = MapsforgeController.mapFiles(config.filesDir)
+
+    override fun browseMapsforge(path: String): MapsforgeCatalogPage =
+        MapsforgeCatalogClient.browse(path)
+
+    override fun suggestMapsforgeMaps(countryIso: String, city: String?): List<MapsforgeMap> =
+        MapsforgeCatalogClient.suggest(countryIso, city)
+
+    override fun downloadMapsforgeMap(
+        url: String,
+        name: String,
+        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit,
+        onDone: (ok: Boolean, message: String, file: File?) -> Unit,
+    ): MapsforgeDownload =
+        MapsforgeMapDownloader.download(config.filesDir, url, name, onProgress, onDone)
+
+    override fun deleteMapsforgeMap(file: File): Boolean {
+        runCatching { if (file.exists()) file.delete() }
+        return !file.exists()
+    }
 }

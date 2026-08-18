@@ -66,6 +66,7 @@ internal class MapLibreDashController(
     private val mapView: MapView,
     private val styleDayUrl: String,
     private val styleNightUrl: String,
+    private val maxFps: Int? = null,
 ) {
     private var map: MapLibreMap? = null
     private var styleReady = false
@@ -91,6 +92,12 @@ internal class MapLibreDashController(
 
     fun onCreate(savedInstanceState: Bundle?) {
         mapView.onCreate(savedInstanceState)
+        // Cap the GL render rate on a projected/encoded host. MapLibre renders continuously & uncapped
+        // (~60-115fps); the dash decoder gets timestamp-less H.264 and paces by arrival rate, so an
+        // uncapped flood greens it (green<->map flicker). Match the dash encoder rate so the decoder can
+        // track it. Null (phone preview) = uncapped, since it's never encoded. Applied post-onCreate so
+        // the MapRenderer exists.
+        maxFps?.let { runCatching { mapView.setMaximumFps(it) } }
         // Offline diagnostics: if the style/tiles can't load and no downloaded region covers the
         // view, this fires — the host keeps its osmdroid raster engine as the offline map.
         mapView.addOnDidFailLoadingMapListener { err ->

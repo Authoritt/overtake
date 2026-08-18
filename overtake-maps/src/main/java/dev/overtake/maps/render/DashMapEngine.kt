@@ -25,7 +25,10 @@ import org.maplibre.android.maps.MapView as LibreMapView
  *    skips any encode path, so there is no reason not to show the premium look.
  *  - **Off-screen / projected host** → [OvertakeMapsConfig.rendererKind] decides: MAPLIBRE (default),
  *    OSMDROID online raster, or MAPSFORGE offline VECTOR `.map` tiles (Canvas — screen-OFF like the
- *    raster engine, but vector; falls back to raster when the rider has no `.map`). All first-class.
+ *    raster engine, but vector). All first-class. MAPSFORGE is STRICT: with no usable `.map` it draws
+ *    NOTHING (the host is left empty) rather than silently swapping in osmdroid raster — a silent swap
+ *    made Mapsforge look identical to / as broken as osmdroid. The host gates on
+ *    [dev.overtake.maps.OfflineManager.hasMapsforgeMaps] and shows a "download a map" prompt instead.
  *
  * History: MapLibre GL was empirically proven to render cleanly — and to keep rendering with the phone
  * screen OFF — to an encoder-backed off-screen host, so it is the default; osmdroid stays selectable
@@ -62,21 +65,13 @@ internal class DashMapEngine(
                 } catch (_: Exception) {
                 }
             }
-            // On a projected/off-screen host (Presentation on a VirtualDisplay -> MediaCodec), MapLibre
-            // MUST render via TextureView. A SurfaceView is a separate SurfaceControl layer that this
-            // dash does NOT composite into the encoder input Surface -> the encoded frames are SOLID
-            // GREEN (verified on the 450NK: osmdroid Canvas + the Compose overlays capture fine, only
-            // the GL layer is missing). TextureView draws into the view hierarchy the VD captures, same
-            // place osmdroid does. The phone preview (Activity window) keeps the cheaper SurfaceView.
-            val projected = context !is Activity
-            val mv = if (projected) {
-                val opts = org.maplibre.android.maps.MapLibreMapOptions
-                    .createFromAttributes(context, null)
-                    .textureMode(true)
-                LibreMapView(context, opts)
-            } else {
-                LibreMapView(context)
-            }
+            // MapLibre GL renders continuously and UNCAPPED (~60-115fps). The dash decoder receives raw
+            // H.264 access units with NO timestamps (see the fork VideoPipeline) and paces by ARRIVAL
+            // RATE, so an uncapped flood greens it (partial macroblocks / green<->map flicker) while the
+            // osmdroid invalidate-driven <=30fps stream decodes fine over the same encoder+link. The GL
+            // surface itself IS captured (a file dump of this path decodes clean); the cap applied in
+            // MapLibreDashController.onCreate is what matches the stream to what the dash decoder tracks.
+            val mv = LibreMapView(context)
             host.addView(
                 mv, 0,
                 ViewGroup.LayoutParams(
@@ -84,7 +79,11 @@ internal class DashMapEngine(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 ),
             )
-            libre = MapLibreDashController(context, mv, config.styleDayUrl, config.styleNightUrl)
+            libre = MapLibreDashController(
+                context, mv, config.styleDayUrl, config.styleNightUrl,
+                // Cap the GL render rate ONLY when projected/encoded (never the phone Activity preview).
+                maxFps = if (context is Activity) null else 30,
+            )
             osm = null
             val why = when {
                 context is Activity -> "phone preview"
@@ -100,13 +99,16 @@ internal class DashMapEngine(
 
     /**
      * The off-screen Canvas family (both keep rendering with the phone screen OFF, unlike GL):
-     *  - MAPSFORGE → offline VECTOR `.map` tiles when the rider has them; if none is present (or the
-     *    files can't be read) it degrades GRACEFULLY to the online osmdroid raster and logs where to
-     *    drop a `.map`, never crashing on a missing offline source.
+     *  - MAPSFORGE → offline VECTOR `.map` tiles when the rider has them; if NONE is present (or the
+     *    files can't be read) it returns **null** — the host is left EMPTY and NOTHING is drawn. It
+     *    does NOT silently degrade to the osmdroid raster (that made Mapsforge indistinguishable from
+     *    a broken osmdroid). The fork gates on [OfflineManager.hasMapsforgeMaps] and shows a download
+     *    prompt instead; this branch just refuses to lie about the source.
      *  - OSMDROID → always the online osmdroid raster.
-     * Both are the SAME [DashMapController] (same MapView + nav overlays); only the tile source differs.
+     * When non-null both are the SAME [DashMapController] (same MapView + nav overlays); only the tile
+     * source differs. Returns null ONLY for MAPSFORGE-with-no-map; all [MapRenderer] calls then no-op.
      */
-    private fun attachOsmdroidFamily(context: Context, host: ViewGroup): DashMapController {
+    private fun attachOsmdroidFamily(context: Context, host: ViewGroup): DashMapController? {
         if (config.rendererKind == RendererKind.MAPSFORGE) {
             val files = MapsforgeController.mapFiles(config.filesDir)
             val provider = MapsforgeController.buildTileProvider(context, files)
@@ -116,11 +118,11 @@ internal class DashMapEngine(
             }
             MapsLog.w(
                 "map",
-                "[MAP] engine=osmdroid raster (config=MAPSFORGE fallback — no readable .map in " +
-                    "${MapsforgeController.mapsDir(config.filesDir).absolutePath}; drop a Mapsforge " +
-                    ".map there for offline vector)",
+                "[MAP] engine=Mapsforge but NO readable .map in " +
+                    "${MapsforgeController.mapsDir(config.filesDir).absolutePath} — host left EMPTY " +
+                    "(STRICT: no osmdroid fallback; host shows a download prompt via hasMapsforgeMaps())",
             )
-            return DashMapController(context, host)
+            return null
         }
         MapsLog.w("map", "[MAP] engine=osmdroid (config=OSMDROID)")
         return DashMapController(context, host)

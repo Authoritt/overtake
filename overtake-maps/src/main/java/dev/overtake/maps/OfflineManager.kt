@@ -4,6 +4,7 @@
 package dev.overtake.maps
 
 import dev.overtake.maps.route.offline.OfflineAreasStore
+import java.io.File
 
 /**
  * The offline-data seam a host drives to manage downloaded map areas: list what's downloaded (with
@@ -15,6 +16,12 @@ import dev.overtake.maps.route.offline.OfflineAreasStore
  * The heavy engines behind it — MapLibre vector regions, the BRouter `.rd5` / Overpass offline
  * routing data, the area registry — are the extracted library engines, so every host drives the
  * identical download/route-build/delete flow.
+ *
+ * A SECOND, independent offline surface lives here too: the **Mapsforge** offline VECTOR `.map`
+ * catalog (the `hasMapsforgeMaps` / `installedMapsforgeMaps` / `browseMapsforge` / `suggestMapsforgeMaps`
+ * / `downloadMapsforgeMap` / `deleteMapsforgeMap` group). Those regional `.map` files are what the
+ * [RendererKind.MAPSFORGE] engine renders; with none installed that engine has NOTHING to draw, so a
+ * host gates on [hasMapsforgeMaps] and sends the rider here to download one (see [browseMapsforge]).
  */
 interface OfflineManager {
 
@@ -64,4 +71,47 @@ interface OfflineManager {
 
     /** Wipe the interactive bike-dashboard raster tile cache. */
     fun clearRasterCache()
+
+    // --- Mapsforge offline VECTOR `.map` catalog -------------------------------------------------
+
+    /**
+     * True when ≥1 usable Mapsforge `.map` vector file is installed. A host gates the
+     * [RendererKind.MAPSFORGE] map on this: false ⇒ show a "download an offline map" prompt instead of
+     * the (empty) Mapsforge map — there is NO silent osmdroid fallback.
+     */
+    fun hasMapsforgeMaps(): Boolean
+
+    /** The installed Mapsforge `.map` files (name + on-disk size via [File.length]); may be empty. */
+    fun installedMapsforgeMaps(): List<File>
+
+    /**
+     * Browse the mapsforge.org catalog at [path] (relative to the V5 root; `""` = root: continents).
+     * Returns the sub-directories to drill into (continent → country → sub-region) and the `.map`
+     * files at this level. Network + blocking — call off the main thread; throws on transport failure.
+     */
+    fun browseMapsforge(path: String = ""): MapsforgeCatalogPage
+
+    /**
+     * Best-effort "suggested for you": the regional `.map`(s) matching a phone-detected [countryIso]
+     * (ISO-3166 alpha-2), optionally refined by a known [city]. Network + blocking; NEVER throws — a
+     * failure/no-match yields an empty list so the host simply omits the suggestion.
+     */
+    fun suggestMapsforgeMaps(countryIso: String, city: String? = null): List<MapsforgeMap>
+
+    /**
+     * Stream-download the catalog `.map` at [url] into the maps dir as `<name>.map` (a `.part` temp is
+     * renamed atomically only on full success; a failure/cancel deletes it). [onProgress] reports
+     * (bytesRead, totalBytes) — totalBytes is `-1` if the server omits Content-Length. [onDone] reports
+     * `ok` + a message + the installed [File] (or null). Callbacks fire on the downloader's worker
+     * thread — marshal to your UI thread. Cancel via the returned [MapsforgeDownload].
+     */
+    fun downloadMapsforgeMap(
+        url: String,
+        name: String,
+        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit,
+        onDone: (ok: Boolean, message: String, file: File?) -> Unit,
+    ): MapsforgeDownload
+
+    /** Delete an installed Mapsforge `.map` [file]. Returns true when it's gone afterwards. */
+    fun deleteMapsforgeMap(file: File): Boolean
 }
