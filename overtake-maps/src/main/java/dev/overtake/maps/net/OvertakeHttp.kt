@@ -53,6 +53,32 @@ object OvertakeHttp {
     /** True when the host reports a usable pinned network (proxy for "we have internet"). */
     fun hasInternetPin(): Boolean = networkProvider?.invoke() != null
 
+    /**
+     * Host hook: proactively (re)establish the uplink requests should ride. On a bike Wi-Fi head
+     * unit the fork pins a CELLULAR uplink so routing reaches the internet even while the phone sits
+     * on the bike's internet-less Wi-Fi. The routing engines call [ensureCellularUplink] before a
+     * request burst. Null = nothing to do (the default network is used). Set once by the host at
+     * startup, alongside [networkProvider].
+     */
+    @Volatile
+    var uplinkEnsurer: (() -> Unit)? = null
+
+    /**
+     * Host hook: true when the pinned uplink is specifically CELLULAR (vs another validated internet
+     * network). Diagnostics only — the "uplink=cellular/internet/NONE" log line; routing decisions
+     * use [hasInternetPin]. Null → reported as not-cellular.
+     */
+    @Volatile
+    var cellularPinChecker: (() -> Boolean)? = null
+
+    /** Ask the host to (re)establish its preferred uplink before a request burst (see [uplinkEnsurer]). */
+    fun ensureCellularUplink() {
+        uplinkEnsurer?.invoke()
+    }
+
+    /** True when the host reports the pinned uplink is cellular (diagnostics only; see [cellularPinChecker]). */
+    fun isCellularPin(): Boolean = cellularPinChecker?.invoke() ?: false
+
     private val lastCallByHost = ConcurrentHashMap<String, Long>()
 
     /** Block just enough so [host] is hit at most once per [minIntervalMs] (courteous to public servers). */

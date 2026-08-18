@@ -20,8 +20,16 @@ interface Router {
     /** The route plus up to [RouteOptions.maxAlternatives] alternatives. */
     suspend fun alternatives(from: GeoPoint, to: GeoPoint, options: RouteOptions): RouteResult
 
-    /** A scenic loop that starts and ends at [from], targeting [RouteOptions.circuitKm]. */
-    suspend fun circuit(from: GeoPoint, options: RouteOptions): RouteResult
+    /**
+     * An out-and-back route: travel from [from] to [to], then return to [from] (a via at the
+     * turnaround), delivered as a single route. This is the fork's "Circuit" / there-and-back ride.
+     *
+     * (The scaffold originally typed this as a destination-less scenic loop keyed on
+     * [RouteOptions.circuitKm]; the only live fork feature is the out-and-back to a picked place, so
+     * the contract takes a [to]. The km-target loop generators — `FunRoutePlanner.circuitWaypoints`,
+     * `OrsRouter.roundTrip` — moved in with the engine but stay unwired, exactly as in the fork.)
+     */
+    suspend fun circuit(from: GeoPoint, to: GeoPoint, options: RouteOptions): RouteResult
 
     /** True if an on-device offline routing graph covers both endpoints (no network needed). */
     fun hasOfflineGraph(from: GeoPoint, to: GeoPoint): Boolean

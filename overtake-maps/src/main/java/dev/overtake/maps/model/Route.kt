@@ -44,6 +44,6 @@ data class Lane(
  */
 data class RouteResult(
     val routes: List<Route>,
-    val avoidHonored: Boolean,
+    val avoidHonored: Boolean = true,
     val warning: String? = null,
 )

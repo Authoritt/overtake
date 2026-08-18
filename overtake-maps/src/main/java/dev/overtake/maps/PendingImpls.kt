@@ -7,17 +7,14 @@ import android.content.Context
 import android.os.Bundle
 import android.view.ViewGroup
 import dev.overtake.maps.contract.MapRenderer
-import dev.overtake.maps.contract.Router
-import dev.overtake.maps.model.GeoPoint
 import dev.overtake.maps.model.MapPlace
-import dev.overtake.maps.model.RouteOptions
-import dev.overtake.maps.model.RouteResult
 
 /**
- * Placeholder renderer/router that [OvertakeMaps.create] wires into a [MapProvider.Native] for the
- * search-only path (Stage 1). Constructing them is free — they throw ONLY if a method is actually
- * invoked — so a host that just wants [MapProvider.Native.search] never trips them. Stage 3 (renderer)
- * and Stage 2 (router) replace these with the real implementations moved from the fork.
+ * Placeholder renderer that [OvertakeMaps.create] wires into a [MapProvider.Native]. Constructing it
+ * is free — it throws ONLY if a method is actually invoked — so a host that just wants
+ * [MapProvider.Native.search] (or the now-real [MapProvider.Native.router]) never trips it. Stage 3
+ * (renderer) replaces this with the real implementation moved from the fork; the router landed in
+ * Stage 2 ([dev.overtake.maps.route.RouterChain]).
  */
 
 private fun pending(stage: String): Nothing =
@@ -60,11 +57,4 @@ internal class PendingRenderer : MapRenderer {
     override fun zoomBy(delta: Double) = pending("Stage 3 (renderer)")
     override fun resetNorth() = pending("Stage 3 (renderer)")
     override fun setOnLongPress(cb: (Double, Double) -> Unit) = pending("Stage 3 (renderer)")
-}
-
-internal class PendingRouter : Router {
-    override suspend fun route(from: GeoPoint, to: GeoPoint, options: RouteOptions): RouteResult = pending("Stage 2 (router)")
-    override suspend fun alternatives(from: GeoPoint, to: GeoPoint, options: RouteOptions): RouteResult = pending("Stage 2 (router)")
-    override suspend fun circuit(from: GeoPoint, options: RouteOptions): RouteResult = pending("Stage 2 (router)")
-    override fun hasOfflineGraph(from: GeoPoint, to: GeoPoint): Boolean = pending("Stage 2 (router)")
 }
