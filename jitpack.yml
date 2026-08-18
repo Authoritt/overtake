@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# JitPack build config for Overtake (multi-module Android library).
+#
+# JitPack builds the library straight from a git tag with ZERO publish infrastructure and serves it
+# from https://jitpack.io — the easiest public path for consumers. It provides the Android SDK and
+# accepts its licenses automatically for `com.android.library` modules; here we only pin the JDK (the
+# heavy map stack in :overtake-maps targets 17) and the publish command.
+#
+# `install:` replaces JitPack's default build step. `publishToMavenLocal` at the root publishes all
+# three modules (:overtake, :overtake-maps, :brouter) to the local Maven repo JitPack then re-hosts.
+jdk:
+  - openjdk17
+install:
+  - ./gradlew publishToMavenLocal --no-daemon --stacktrace

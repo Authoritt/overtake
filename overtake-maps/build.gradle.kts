@@ -8,15 +8,17 @@
 // the contracts defined here.
 plugins {
     id("com.android.library")
+    id("maven-publish")
 }
 
-// Publishing coordinates. A consumer (the OpenCfMoto cockpit fork) pulls this module via a Gradle
-// composite build (`includeBuild`), which auto-substitutes an external `dev.overtake:overtake-maps`
-// dependency for THIS project only when the project's identity (group:name) matches. `name` is the
-// module path (`overtake-maps`); `group` must be set explicitly (the default is empty). No maven
-// publishing is configured — the coordinates exist purely so composite substitution resolves.
-group = "dev.overtake"
-version = "0.1.0-dev"
+// Publishing coordinates (group=dev.overtake, version — both in gradle.properties, the SINGLE source
+// of truth for all three artifacts; artifactId defaults to the module name `overtake-maps`). They now
+// serve TWO consumers:
+//   1. Composite build — the OpenCfMoto cockpit fork pulls this module via `includeBuild`, which
+//      auto-substitutes an external `dev.overtake:overtake-maps` dependency whenever the project's
+//      identity (group:name) matches, so local iteration builds against THESE sources.
+//   2. Maven publishing — the `maven-publish` config at the bottom of this file ships the release AAR
+//      as `dev.overtake:overtake-maps:<version>` for external / release consumers.
 
 android {
     namespace = "dev.overtake.maps"
@@ -44,6 +46,16 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    // Expose a SINGLE variant (release) as the Maven component, with a matching sources jar. This is
+    // AGP's first-party publishing (no fat-aar plugin), so it stays robust on AGP 9.x. The publication
+    // that consumes components["release"] is registered in afterEvaluate below — AGP only creates that
+    // software component during its own afterEvaluate pass.
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+        }
     }
 }
 
@@ -86,4 +98,49 @@ dependencies {
     // androidx.core — ContextCompat.getDrawable() for the renderer's puck / destination-pin bitmaps
     // (same version the :overtake reader module pins).
     implementation("androidx.core:core-ktx:1.18.0")
+}
+
+// ── Maven publication ────────────────────────────────────────────────────────────────────────────
+// afterEvaluate: AGP publishes the `release` software component only after its own configuration pass.
+// `from(components["release"])` carries the AAR, the sources jar, AND the dependency graph into the
+// generated POM — `api(...)` deps land as <scope>compile</scope> (on the consumer's compile classpath:
+// dev.overtake:overtake + okhttp, the only types on the public surface), `implementation(...)` deps as
+// <scope>runtime</scope> (dev.overtake:brouter + osmdroid/MapLibre/mapsforge/coroutines, impl-only). The
+// two sibling project deps resolve as real artifacts because :overtake and :brouter publish too (same
+// group/version), so a consumer pulling dev.overtake:overtake-maps gets the whole graph from one repo.
+afterEvaluate {
+    publishing {
+        publications {
+            register<MavenPublication>("release") {
+                from(components["release"])
+                artifactId = "overtake-maps"
+                pom {
+                    name.set("Overtake Maps")
+                    description.set(
+                        "Overtake — offline, screen-off, moto-optimized map renderer + routing + " +
+                            "place-search supplier library for Android",
+                    )
+                    url.set("https://github.com/Authoritt/overtake")
+                    licenses {
+                        license {
+                            name.set("AGPL-3.0-or-later")
+                            url.set("https://www.gnu.org/licenses/agpl-3.0-standalone.html")
+                            distribution.set("repo")
+                        }
+                    }
+                    developers {
+                        developer {
+                            name.set("Authoritt and the Overtake contributors")
+                            url.set("https://github.com/Authoritt")
+                        }
+                    }
+                    scm {
+                        url.set("https://github.com/Authoritt/overtake")
+                        connection.set("scm:git:https://github.com/Authoritt/overtake.git")
+                        developerConnection.set("scm:git:ssh://git@github.com/Authoritt/overtake.git")
+                    }
+                }
+            }
+        }
+    }
 }

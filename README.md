@@ -125,9 +125,12 @@ Toolchain: Gradle 9.4.1 · Android Gradle Plugin 9.2.1 · Kotlin 2.2.0 (AGP 9's 
 compileSdk 36 · minSdk 29. Runtime dependencies are only `androidx.core:core-ktx` and
 `org.jetbrains.kotlinx:kotlinx-coroutines-android`.
 
-To consume it from a host app, include the module in a composite build
-(`implementation(project(":overtake"))`) or depend on the produced AAR. (No Maven artifact is
-published yet.)
+To consume it from a host app you have two options, and they use the **same** dependency coordinate:
+a Gradle composite build (`includeBuild("../overtake")`) for local development against the live source,
+or the **published Maven artifact** `dev.overtake:overtake-maps:<version>` (plus `dev.overtake:overtake`
+and `dev.overtake:brouter`, resolved transitively) for releases. Publishing to Maven Local / GitHub
+Packages / JitPack, the consumer snippets, and the dev-vs-release workflow are documented in
+[`PUBLISHING.md`](PUBLISHING.md).
 
 ## License
 
