@@ -34,10 +34,10 @@ import java.net.UnknownHostException
  * host's pinned uplink (e.g. the phone's cellular network) while the process is bound to a
  * bike Wi‑Fi with no internet.
  *
- * Public: the consuming fork's osmdroid tile provider (a renderer that moves into the lib in a later
- * stage) instantiates this cross-module.
+ * Internal: the in-lib osmdroid tile provider ([dev.overtake.maps.render.GpxOsmdroid]) instantiates
+ * this within the module (tightened once the renderer landed in-lib, Stage 3).
  */
-class CellularTileDownloader : TileDownloader() {
+internal class CellularTileDownloader : TileDownloader() {
     @Volatile
     private var loggedBind = false
 

@@ -18,7 +18,7 @@ import dev.overtake.maps.model.MapPlace
  * the fork.
  *
  * Lifecycle ([onCreate]..[onDestroy]) mirrors the Android map-view lifecycle the backends require;
- * the host forwards its own Activity/Presentation lifecycle here.
+ * the host forwards its own Activity (or projected-display host-window) lifecycle here.
  */
 interface MapRenderer {
 

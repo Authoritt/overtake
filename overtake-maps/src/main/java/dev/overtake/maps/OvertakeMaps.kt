@@ -4,7 +4,9 @@
 package dev.overtake.maps
 
 import android.content.Context
+import dev.overtake.maps.contract.MapRenderer
 import dev.overtake.maps.net.OvertakeHttp
+import dev.overtake.maps.render.DashMapEngine
 import dev.overtake.maps.route.RouterChain
 import dev.overtake.maps.search.PlaceSearchImpl
 
@@ -13,10 +15,12 @@ import dev.overtake.maps.search.PlaceSearchImpl
  * [MapProvider] to drive (a native map, or a hand-off to Google/Waze for Android Auto).
  *
  * [create] returns a [MapProvider.Native] whose [PlaceSearchImpl] runs the extracted place-search
- * stack (Stage 1) and whose [RouterChain] runs the extracted routing engine (Stage 2 — offline
- * BRouter / Valhalla / ORS / OSRM with the fork's connectivity-aware chooser). The renderer is still
- * a [PendingRenderer] stub (Stage 3 replaces it); constructing it is free — it throws only if invoked
- * — so the search + routing paths never trip it.
+ * stack (Stage 1), whose [RouterChain] runs the extracted routing engine (Stage 2 — offline
+ * BRouter / Valhalla / ORS / OSRM with the fork's connectivity-aware chooser) and whose renderer is
+ * the extracted map stack (Stage 3 — [DashMapEngine], MapLibre GL vector or osmdroid raster per
+ * [OvertakeMapsConfig.rendererKind]). The renderer is un-attached; the host calls
+ * [MapRenderer.attach] with its own host [android.view.ViewGroup] to bring it up. A fresh renderer is
+ * returned per [create] call, so each host surface gets its own.
  *
  * [context] is required because the platform Geocoder source ([dev.overtake.maps.search.AndroidGeocode])
  * needs one; the library holds only its `applicationContext`.
@@ -28,7 +32,7 @@ object OvertakeMaps {
         OvertakeHttp.userAgent = config.userAgent
         val appContext = context.applicationContext
         return MapProvider.Native(
-            renderer = PendingRenderer(),
+            renderer = DashMapEngine(config),
             // The routing engine is Context-based (offline graph dirs + BRouter assets under
             // filesDir) and needs only the host's effective ORS key from config; hold the app context
             // so the router outlives the caller's scope.
@@ -39,4 +43,13 @@ object OvertakeMaps {
             offline = NativeOfflineManager(appContext, config),
         )
     }
+
+    /**
+     * DEV PROBE ONLY — an un-attached [MapRenderer] pinned to MapLibre regardless of
+     * [OvertakeMapsConfig.rendererKind] or the host [Context] type. Used to measure MapLibre's output
+     * on an encoder-backed off-screen host in isolation; has no production role. The host calls
+     * [MapRenderer.attach] as usual.
+     */
+    fun createDevProbeRenderer(config: OvertakeMapsConfig): MapRenderer =
+        DashMapEngine(config, forceLibre = true)
 }

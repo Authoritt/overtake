@@ -13,11 +13,11 @@ import java.io.File
  * tracked by [OfflineAreasStore]; these helpers stay so [OfflinePoiIndex] and a host's vector renderer
  * can consume a hosted pack if one is ever installed under [packDir].
  *
- * Public: [localStyleUri] is still called by the consuming fork's vector renderer (a renderer that
- * moves into the lib in a later stage), so it reaches this cross-module. Once the renderer is in-lib
- * this can tighten.
+ * Internal: the in-lib vector renderer ([dev.overtake.maps.render.MapLibreDashController]) reads
+ * [localStyleUri], and [OfflinePoiIndex] reads the pack dir — both live in this module, so the surface
+ * no longer needs to be public (tightened once the renderer landed in-lib, Stage 3).
  */
-object RegionPackStore {
+internal object RegionPackStore {
     private const val PREFS = "opencfmoto_map_packs"
     private const val KEY_ACTIVE = "active_pack"
 

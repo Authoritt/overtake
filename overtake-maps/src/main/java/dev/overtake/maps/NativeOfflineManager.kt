@@ -4,10 +4,10 @@
 package dev.overtake.maps
 
 import android.content.Context
+import dev.overtake.maps.render.GpxOsmdroid
 import dev.overtake.maps.route.offline.MapOfflineManager
 import dev.overtake.maps.route.offline.OfflineAreaDownloader
 import dev.overtake.maps.route.offline.OfflineAreasStore
-import java.io.File
 
 /**
  * The [OfflineManager] the library hands back from [MapProvider.Native]. Holds the app [context]
@@ -57,20 +57,9 @@ internal class NativeOfflineManager(
         OfflineAreaDownloader.delete(context, name, onDone)
     }
 
-    override fun rasterCacheBytes(): Long = dirSize(rasterCacheDir())
+    // The osmdroid interactive tile cache (`filesDir/osmdroid/tiles`) is owned by [GpxOsmdroid], which
+    // is the SINGLE definition of that path — delegate here so read/clear can't drift from setup.
+    override fun rasterCacheBytes(): Long = GpxOsmdroid.rasterCacheBytes(config.filesDir)
 
-    override fun clearRasterCache() {
-        val cache = rasterCacheDir()
-        runCatching { cache.deleteRecursively(); cache.mkdirs() }
-    }
-
-    /** The osmdroid interactive tile cache — `filesDir/osmdroid/tiles`, matching the host's setup. */
-    private fun rasterCacheDir(): File = File(File(config.filesDir, "osmdroid"), "tiles")
-
-    private fun dirSize(dir: File): Long {
-        if (!dir.exists()) return 0L
-        var total = 0L
-        dir.walkTopDown().forEach { if (it.isFile) total += it.length() }
-        return total
-    }
+    override fun clearRasterCache() = GpxOsmdroid.clearRasterCache(config.filesDir)
 }

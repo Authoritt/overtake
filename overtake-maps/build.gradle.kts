@@ -67,4 +67,8 @@ dependencies {
 
     // Coroutines: the same version :overtake uses (Router/PlaceSearch expose suspend functions).
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // androidx.core — ContextCompat.getDrawable() for the renderer's puck / destination-pin bitmaps
+    // (same version the :overtake reader module pins).
+    implementation("androidx.core:core-ktx:1.18.0")
 }
