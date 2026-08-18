@@ -26,13 +26,17 @@ object OvertakeMaps {
     fun create(context: Context, config: OvertakeMapsConfig): MapProvider {
         // Install the host's identifying User-Agent for all map HTTP (usage-policy requirement).
         OvertakeHttp.userAgent = config.userAgent
+        val appContext = context.applicationContext
         return MapProvider.Native(
             renderer = PendingRenderer(),
             // The routing engine is Context-based (offline graph dirs + BRouter assets under
             // filesDir) and needs only the host's effective ORS key from config; hold the app context
             // so the router outlives the caller's scope.
-            router = RouterChain(context.applicationContext, config.defaultOrsApiKey),
+            router = RouterChain(appContext, config.defaultOrsApiKey),
             search = PlaceSearchImpl(config, context),
+            // Offline data management (downloaded areas + routing data + raster cache). Context-based
+            // (all state under config.filesDir); holds the app context so it outlives the caller.
+            offline = NativeOfflineManager(appContext, config),
         )
     }
 }

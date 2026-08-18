@@ -41,8 +41,12 @@ import kotlin.math.sin
  * Consequences to know: `fastbike` **excludes motorways** (so a rider's "avoid highways" is always
  * honored offline, but a plain "fast" offline route also won't take a motorway), and — like any
  * bike profile — it may prefer a cycleway a motorcycle can't legally use. Both are F2 concerns.
+ *
+ * Internal: the offline-download orchestration ([dev.overtake.maps.route.offline.OfflineAreaDownloader])
+ * moved in-lib in Stage 2 Pass 2, so nothing cross-module calls this any more — it is driven only by
+ * [OfflineRouter] and the in-lib downloader.
  */
-object BrouterRouter {
+internal object BrouterRouter {
     private const val ASSET_DIR = "brouter"
     private const val PROFILE_FILE = "fastbike.brf"
     private const val LOOKUPS_FILE = "lookups.dat"

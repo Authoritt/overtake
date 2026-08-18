@@ -35,8 +35,12 @@ import kotlin.math.sqrt
  *
  * This is not as rich as a full GraphHopper/OSRM engine (no turn restrictions), but it's real,
  * costs nothing (Overpass is free, no key, no server) and works while projecting to the bike.
+ *
+ * Internal: the offline-download orchestration ([dev.overtake.maps.route.offline.OfflineAreaDownloader])
+ * moved in-lib in Stage 2 Pass 2, so nothing cross-module calls this any more — it is driven only by
+ * [OfflineRouter] and the in-lib downloader.
  */
-object OfflineRoadGraph {
+internal object OfflineRoadGraph {
     private const val MAGIC = 0x4F43524F // 'OCRO'
     private const val VERSION = 1
     private const val DIR = "offline_routing"

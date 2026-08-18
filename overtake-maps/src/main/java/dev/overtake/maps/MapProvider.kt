@@ -14,11 +14,12 @@ import dev.overtake.maps.contract.Router
  */
 sealed interface MapProvider {
 
-    /** Overtake renders, routes and searches in-process via its own map stack. */
+    /** Overtake renders, routes, searches and manages offline data in-process via its own map stack. */
     data class Native(
         val renderer: MapRenderer,
         val router: Router,
         val search: PlaceSearch,
+        val offline: OfflineManager,
     ) : MapProvider
 
     /** Hand navigation to Google Maps for Android Auto. */
