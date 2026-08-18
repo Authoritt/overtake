@@ -9,6 +9,7 @@ import dev.overtake.maps.render.MapsforgeController
 import dev.overtake.maps.route.offline.MapOfflineManager
 import dev.overtake.maps.route.offline.OfflineAreaDownloader
 import dev.overtake.maps.route.offline.OfflineAreasStore
+import kotlinx.coroutines.flow.StateFlow
 import java.io.File
 
 /**
@@ -79,13 +80,12 @@ internal class NativeOfflineManager(
     override fun suggestMapsforgeMaps(countryIso: String, city: String?): List<MapsforgeMap> =
         MapsforgeCatalogClient.suggest(countryIso, city)
 
-    override fun downloadMapsforgeMap(
-        url: String,
-        name: String,
-        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit,
-        onDone: (ok: Boolean, message: String, file: File?) -> Unit,
-    ): MapsforgeDownload =
-        MapsforgeMapDownloader.download(config.filesDir, url, name, onProgress, onDone)
+    override fun startMapsforgeDownload(url: String, name: String): Boolean =
+        MapsforgeMapDownloader.start(config.filesDir, url, name)
+
+    override fun cancelMapsforgeDownload() = MapsforgeMapDownloader.cancel()
+
+    override fun mapsforgeDownloadState(): StateFlow<MapsforgeDownloadState> = MapsforgeMapDownloader.state
 
     override fun deleteMapsforgeMap(file: File): Boolean {
         runCatching { if (file.exists()) file.delete() }

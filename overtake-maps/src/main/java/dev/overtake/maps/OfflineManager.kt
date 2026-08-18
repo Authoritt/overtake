@@ -4,6 +4,7 @@
 package dev.overtake.maps
 
 import dev.overtake.maps.route.offline.OfflineAreasStore
+import kotlinx.coroutines.flow.StateFlow
 import java.io.File
 
 /**
@@ -19,7 +20,7 @@ import java.io.File
  *
  * A SECOND, independent offline surface lives here too: the **Mapsforge** offline VECTOR `.map`
  * catalog (the `hasMapsforgeMaps` / `installedMapsforgeMaps` / `browseMapsforge` / `suggestMapsforgeMaps`
- * / `downloadMapsforgeMap` / `deleteMapsforgeMap` group). Those regional `.map` files are what the
+ * / `startMapsforgeDownload` / `deleteMapsforgeMap` group). Those regional `.map` files are what the
  * [RendererKind.MAPSFORGE] engine renders; with none installed that engine has NOTHING to draw, so a
  * host gates on [hasMapsforgeMaps] and sends the rider here to download one (see [browseMapsforge]).
  */
@@ -99,18 +100,27 @@ interface OfflineManager {
     fun suggestMapsforgeMaps(countryIso: String, city: String? = null): List<MapsforgeMap>
 
     /**
-     * Stream-download the catalog `.map` at [url] into the maps dir as `<name>.map` (a `.part` temp is
-     * renamed atomically only on full success; a failure/cancel deletes it). [onProgress] reports
-     * (bytesRead, totalBytes) — totalBytes is `-1` if the server omits Content-Length. [onDone] reports
-     * `ok` + a message + the installed [File] (or null). Callbacks fire on the downloader's worker
-     * thread — marshal to your UI thread. Cancel via the returned [MapsforgeDownload].
+     * Start — or RE-ATTACH to — the single app-scoped Mapsforge `.map` download. The transfer runs on
+     * a process-scoped worker OUTSIDE any screen, so it survives navigation; it RESUMES a
+     * `<name>.map.part` left by an earlier run via HTTP Range and auto-retries transient failures with
+     * backoff (see [MapsforgeMapDownloader]). Observe [mapsforgeDownloadState] for live progress; when
+     * the rider re-opens the maps screen, re-read that state to re-attach to a running download instead
+     * of starting a second one. One download at a time.
+     *
+     * @return true if a download for this [url]/[name] is now running (or already was — a re-attach);
+     *   false if a DIFFERENT download is already in flight (the host should wait for it to finish).
      */
-    fun downloadMapsforgeMap(
-        url: String,
-        name: String,
-        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit,
-        onDone: (ok: Boolean, message: String, file: File?) -> Unit,
-    ): MapsforgeDownload
+    fun startMapsforgeDownload(url: String, name: String): Boolean
+
+    /** Cancel the active Mapsforge download: stops the worker and DELETES the partial `.part` file. */
+    fun cancelMapsforgeDownload()
+
+    /**
+     * Live state of the ONE app-scoped Mapsforge download (status, progress, retries) as a `StateFlow`,
+     * so a host observes it across screens and re-attaches after navigation. Holds
+     * [MapsforgeDownloadState.initial] until the first [startMapsforgeDownload].
+     */
+    fun mapsforgeDownloadState(): StateFlow<MapsforgeDownloadState>
 
     /** Delete an installed Mapsforge `.map` [file]. Returns true when it's gone afterwards. */
     fun deleteMapsforgeMap(file: File): Boolean

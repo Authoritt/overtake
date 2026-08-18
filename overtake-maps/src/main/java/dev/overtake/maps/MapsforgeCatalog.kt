@@ -52,11 +52,67 @@ data class MapsforgeCatalogPage(
     val maps: List<MapsforgeMap>,
 )
 
+/** Which phase the single app-scoped Mapsforge download is in (see [OfflineManager.mapsforgeDownloadState]). */
+enum class MapsforgeDownloadStatus {
+    /** No download has run yet (the initial / reset state). */
+    IDLE,
+
+    /** Actively streaming bytes into `<name>.map.part`. */
+    RUNNING,
+
+    /** A transient error hit; waiting out the backoff before the next (resuming) attempt. */
+    RETRYING,
+
+    /** Finished: the `.map` is installed and usable. */
+    SUCCESS,
+
+    /** Gave up after exhausting retries. The `.part` is KEPT so the rider can resume later. */
+    FAILED,
+
+    /** The rider cancelled; the `.part` was deleted. */
+    CANCELED,
+}
+
 /**
- * Handle to an in-flight [OfflineManager.downloadMapsforgeMap] so the host can [cancel] it (a big
- * regional map is hundreds of MB). Cancelling deletes the partial `.part` file and reports done with
- * `ok = false`.
+ * Immutable snapshot of the ONE app-scoped Mapsforge `.map` download the library runs at a time,
+ * published through [OfflineManager.mapsforgeDownloadState] as a `StateFlow`. It OUTLIVES any single
+ * screen: a host observes it to render a progress card, and re-reads it when the rider re-opens the
+ * maps screen to RE-ATTACH to a still-running download (rather than starting a second one). The
+ * transfer keeps going while no one is looking because it runs on a process-scoped worker, not in a
+ * screen's coroutine scope.
+ *
+ * @property status which [MapsforgeDownloadStatus] the download is in.
+ * @property url the source URL (kept so a [MapsforgeDownloadStatus.FAILED] download can be RESUMED).
+ * @property name display name WITHOUT the `.map` extension (e.g. `colombia`).
+ * @property fileName the on-disk target file name (e.g. `colombia.map`).
+ * @property bytesRead bytes already on disk in the `.part` — the running total, resume offset included.
+ * @property totalBytes the full size when known (from `Content-Range` / `Content-Length`), else `-1`.
+ * @property attempt 1-based number of the current/last streaming attempt.
+ * @property maxAttempts how many attempts the retry policy makes before giving up.
+ * @property message a human status/error line (empty when there is nothing to say).
  */
-fun interface MapsforgeDownload {
-    fun cancel()
+data class MapsforgeDownloadState(
+    val status: MapsforgeDownloadStatus,
+    val url: String,
+    val name: String,
+    val fileName: String,
+    val bytesRead: Long,
+    val totalBytes: Long,
+    val attempt: Int,
+    val maxAttempts: Int,
+    val message: String,
+) {
+    /** True while the download is live (streaming or waiting out a retry) — a host shows its progress card. */
+    val isActive: Boolean
+        get() = status == MapsforgeDownloadStatus.RUNNING || status == MapsforgeDownloadStatus.RETRYING
+
+    /** Whole-percent progress `0..100`, or `-1` when the total size is unknown (the server omitted it). */
+    val percent: Int
+        get() = if (totalBytes > 0L) ((bytesRead * 100L) / totalBytes).toInt().coerceIn(0, 100) else -1
+
+    companion object {
+        /** The "nothing has happened yet" value the state flow holds until the first download starts. */
+        val initial: MapsforgeDownloadState =
+            MapsforgeDownloadState(MapsforgeDownloadStatus.IDLE, "", "", "", 0L, -1L, 0, 0, "")
+    }
 }
