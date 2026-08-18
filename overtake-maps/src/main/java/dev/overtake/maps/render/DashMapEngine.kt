@@ -62,7 +62,21 @@ internal class DashMapEngine(
                 } catch (_: Exception) {
                 }
             }
-            val mv = LibreMapView(context)
+            // On a projected/off-screen host (Presentation on a VirtualDisplay -> MediaCodec), MapLibre
+            // MUST render via TextureView. A SurfaceView is a separate SurfaceControl layer that this
+            // dash does NOT composite into the encoder input Surface -> the encoded frames are SOLID
+            // GREEN (verified on the 450NK: osmdroid Canvas + the Compose overlays capture fine, only
+            // the GL layer is missing). TextureView draws into the view hierarchy the VD captures, same
+            // place osmdroid does. The phone preview (Activity window) keeps the cheaper SurfaceView.
+            val projected = context !is Activity
+            val mv = if (projected) {
+                val opts = org.maplibre.android.maps.MapLibreMapOptions
+                    .createFromAttributes(context, null)
+                    .textureMode(true)
+                LibreMapView(context, opts)
+            } else {
+                LibreMapView(context)
+            }
             host.addView(
                 mv, 0,
                 ViewGroup.LayoutParams(
