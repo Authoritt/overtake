@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Permission-FREE by design. The map stack needs INTERNET (tiles/routing) and, at runtime,
+     location — but those grants belong to the HOST app, which declares them in its own manifest and
+     prompts the user. This library merges no permissions and no components into the host, so adding
+     :overtake-maps never changes the host's permission profile on its own. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+</manifest>

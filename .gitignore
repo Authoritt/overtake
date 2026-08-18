@@ -2,6 +2,7 @@
 .gradle/
 /build
 /overtake/build
+/overtake-maps/build
 /local.properties
 .idea/
 .DS_Store
