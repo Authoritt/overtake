@@ -53,6 +53,14 @@ internal class DashMapEngine(
     private var osm: DashMapController? = null
 
     override fun attach(context: Context, host: ViewGroup) {
+        // QoL / KNOWN LIMITATION (WYSIWYG, documented + deferred by owner): on the PHONE the host Context
+        // is an Activity, so this forces MapLibre regardless of the picked renderer. The phone preview
+        // therefore always shows the premium MapLibre (Liberty) look even if the rider selected osmdroid
+        // or Mapsforge for the dash. This fixed the real bug (phone was hardcoded to ugly osmdroid) and is
+        // fine because MapLibre is the default; it is NOT yet true per-engine WYSIWYG on the phone. To make
+        // the phone honor the exact pick, pass a NON-Activity themed context here — a
+        // ContextThemeWrapper(activity, R.style.Theme_OpenCfMoto), exactly what the projected dash host uses
+        // and is proven clean for all three engines. Left as-is intentionally (low-priority QoL).
         val useLibre =
             context is Activity || forceLibre || config.rendererKind == RendererKind.MAPLIBRE
         if (useLibre) {
