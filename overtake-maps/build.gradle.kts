@@ -10,6 +10,14 @@ plugins {
     id("com.android.library")
 }
 
+// Publishing coordinates. A consumer (the OpenCfMoto cockpit fork) pulls this module via a Gradle
+// composite build (`includeBuild`), which auto-substitutes an external `dev.overtake:overtake-maps`
+// dependency for THIS project only when the project's identity (group:name) matches. `name` is the
+// module path (`overtake-maps`); `group` must be set explicitly (the default is empty). No maven
+// publishing is configured — the coordinates exist purely so composite substitution resolves.
+group = "dev.overtake"
+version = "0.1.0-dev"
+
 android {
     namespace = "dev.overtake.maps"
     // API 36.1 (compileSdk 36 with minor API level 1) — matches :overtake and the installed platform.
@@ -41,7 +49,11 @@ android {
 
 dependencies {
     // The permission-light reader module — reused for its OvertakeLog sink (map logging routes there).
-    implementation(project(":overtake"))
+    // `api`, not `implementation`: `dev.overtake.OvertakeLog` is part of the PUBLIC seam surface a host
+    // wires at startup (`OvertakeLog.logger = { ... }`). A maps-only consumer (the OpenCfMoto cockpit
+    // fork) depends on :overtake-maps alone, so the sink must be on its COMPILE classpath, not just
+    // runtime — otherwise the host can't reference OvertakeLog to install its logger.
+    api(project(":overtake"))
     // Vendored offline routing engine (MIT, pure Java) — the offline graph backend for Router.
     implementation(project(":brouter"))
 

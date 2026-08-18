@@ -16,8 +16,13 @@ import java.util.concurrent.ConcurrentHashMap
  * `ConnectivityManager` in the library, the host supplies the [android.net.Network] our requests
  * should pin to (e.g. the cellular uplink on a bike Wi-Fi head unit). Null means "use the default
  * network".
+ *
+ * Visibility: `public` (not `internal`) so a consumer in a SEPARATE Gradle build — the OpenCfMoto
+ * cockpit fork consuming this via a composite build — can install [networkProvider] at startup
+ * (`OvertakeHttp.networkProvider = { host.internetNetwork() }`). If the surface is ever tightened,
+ * route the seam through a public entry (e.g. `OvertakeMaps`) instead of re-`internal`-ing this.
  */
-internal object OvertakeHttp {
+object OvertakeHttp {
 
     /** Guard against runaway responses (generic APIs). */
     const val MAX_RESPONSE_BYTES = 8 * 1024 * 1024

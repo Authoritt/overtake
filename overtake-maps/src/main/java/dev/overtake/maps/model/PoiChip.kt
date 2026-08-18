@@ -5,9 +5,11 @@ package dev.overtake.maps.model
 
 /**
  * A one-tap POI category shown as a chip in search UIs. [label] is what the user sees ("Fuel");
- * [tag] is the machine key the search backend maps to a query (e.g. an Overpass amenity value).
+ * [query] is the machine key the search backend maps to a lookup (e.g. an Overpass `amenity=fuel`
+ * tag filter). Field names mirror the consuming fork's chip EXACTLY so the fork can `typealias` its
+ * own `PoiChip` to this one and every `chip.label` / `chip.query` access compiles unchanged.
  */
 data class PoiChip(
     val label: String,
-    val tag: String,
+    val query: String,
 )
