@@ -17,14 +17,15 @@ import org.maplibre.android.maps.MapView as LibreMapView
 
 /**
  * The library's [MapRenderer] implementation: it owns a map View inside a host [ViewGroup] and fans
- * every call out to whichever backend is live — MapLibre GL vector ([MapLibreDashController]) or
- * osmdroid raster ([DashMapController]).
+ * every call out to whichever backend is live — MapLibre GL vector ([MapLibreDashController]) or the
+ * osmdroid Canvas engine ([DashMapController], online raster OR offline Mapsforge vector tiles).
  *
  * Backend choice (decided in [attach], when the host [Context] is known):
  *  - **Phone preview** (an [Activity] context) → always MapLibre (vector + 3D tilt); the phone control
  *    skips any encode path, so there is no reason not to show the premium look.
- *  - **Off-screen / projected host** → [OvertakeMapsConfig.rendererKind] decides: MAPLIBRE (default) or
- *    OSMDROID raster. Both are first-class.
+ *  - **Off-screen / projected host** → [OvertakeMapsConfig.rendererKind] decides: MAPLIBRE (default),
+ *    OSMDROID online raster, or MAPSFORGE offline VECTOR `.map` tiles (Canvas — screen-OFF like the
+ *    raster engine, but vector; falls back to raster when the rider has no `.map`). All first-class.
  *
  * History: MapLibre GL was empirically proven to render cleanly — and to keep rendering with the phone
  * screen OFF — to an encoder-backed off-screen host, so it is the default; osmdroid stays selectable
@@ -79,9 +80,36 @@ internal class DashMapEngine(
             MapsLog.w("map", "[MAP] engine=MapLibre ($why)")
         } else {
             libre = null
-            osm = DashMapController(context, host)
-            MapsLog.w("map", "[MAP] engine=osmdroid (config=OSMDROID)")
+            osm = attachOsmdroidFamily(context, host)
         }
+    }
+
+    /**
+     * The off-screen Canvas family (both keep rendering with the phone screen OFF, unlike GL):
+     *  - MAPSFORGE → offline VECTOR `.map` tiles when the rider has them; if none is present (or the
+     *    files can't be read) it degrades GRACEFULLY to the online osmdroid raster and logs where to
+     *    drop a `.map`, never crashing on a missing offline source.
+     *  - OSMDROID → always the online osmdroid raster.
+     * Both are the SAME [DashMapController] (same MapView + nav overlays); only the tile source differs.
+     */
+    private fun attachOsmdroidFamily(context: Context, host: ViewGroup): DashMapController {
+        if (config.rendererKind == RendererKind.MAPSFORGE) {
+            val files = MapsforgeController.mapFiles(config.filesDir)
+            val provider = MapsforgeController.buildTileProvider(context, files)
+            if (provider != null) {
+                MapsLog.w("map", "[MAP] engine=Mapsforge (${files.size} .map, Canvas/screen-off)")
+                return DashMapController(context, host, tileProvider = provider)
+            }
+            MapsLog.w(
+                "map",
+                "[MAP] engine=osmdroid raster (config=MAPSFORGE fallback — no readable .map in " +
+                    "${MapsforgeController.mapsDir(config.filesDir).absolutePath}; drop a Mapsforge " +
+                    ".map there for offline vector)",
+            )
+            return DashMapController(context, host)
+        }
+        MapsLog.w("map", "[MAP] engine=osmdroid (config=OSMDROID)")
+        return DashMapController(context, host)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

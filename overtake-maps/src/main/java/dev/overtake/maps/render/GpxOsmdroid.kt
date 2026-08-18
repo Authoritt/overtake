@@ -7,6 +7,7 @@ import android.content.Context
 import dev.overtake.maps.net.OvertakeHttp
 import dev.overtake.maps.route.offline.CellularTileDownloader
 import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.MapTileProviderBase
 import org.osmdroid.tileprovider.MapTileProviderBasic
 import org.osmdroid.tileprovider.modules.INetworkAvailablityCheck
 import org.osmdroid.tileprovider.modules.MapTileDownloader
@@ -84,6 +85,17 @@ object GpxOsmdroid {
     fun createMapView(context: Context): MapView {
         configure(context)
         return MapView(context, cellularTileProvider(context))
+    }
+
+    /**
+     * Build a [MapView] backed by a CALLER-SUPPLIED tile provider (e.g. the Mapsforge vector tile
+     * provider from [MapsforgeController]), after applying the shared osmdroid [configure] (base path
+     * + tile cache + User-Agent). The same MapView the raster engine uses, so [DashMapController]'s nav
+     * overlays render on top of an offline vector source unchanged.
+     */
+    fun createMapView(context: Context, tileProvider: MapTileProviderBase): MapView {
+        configure(context)
+        return MapView(context, tileProvider)
     }
 
     /** Total bytes of the interactive raster tile cache on disk (host [Context] overload). */

@@ -61,6 +61,21 @@ dependencies {
     implementation("org.osmdroid:osmdroid-android:6.1.20")
     implementation("org.maplibre.gl:android-sdk-opengl:13.3.1")
 
+    // Mapsforge offline VECTOR maps, rendered through android.graphics.Canvas (NOT OpenGL): the 3rd
+    // dash renderer. Canvas is the point — like osmdroid raster it keeps drawing with the phone screen
+    // OFF (a GL surface does not), but with vector quality. Deliberately mapsforge-map-android, NOT the
+    // GL `vtm*` line, which reintroduces the screen-off problem.
+    //   Pinned to 0.21.0 to MATCH the osmdroid↔mapsforge bridge below: `osmdroid-mapsforge:6.1.20` was
+    //   compiled against — and transitively pins — mapsforge-map/-themes/-core 0.21.0, so declaring the
+    //   android artifact at the SAME version keeps the whole mapsforge graph aligned to what the bridge
+    //   expects (avoids a 0.21-vs-latest API skew). Pulls mapsforge-map-reader + com.caverock:androidsvg.
+    implementation("org.mapsforge:mapsforge-map-android:0.21.0")
+    // The osmdroid↔mapsforge bridge: renders a Mapsforge `.map` file as an osmdroid TILE SOURCE, so the
+    // nav overlays (route/puck/follow) on the SAME osmdroid MapView the raster engine already uses keep
+    // working unchanged (MapsforgeController + DashMapController). Version MATCHES the pinned
+    // osmdroid-android 6.1.20; it pulls mapsforge-map/-themes 0.21.0 transitively. All on mavenCentral.
+    implementation("org.osmdroid:osmdroid-mapsforge:6.1.20")
+
     // okhttp leaks into the public API (OvertakeMapsConfig.okHttpClientProvider) → api, so a consumer
     // can hand us its own configured client.
     api("com.squareup.okhttp3:okhttp:4.12.0")

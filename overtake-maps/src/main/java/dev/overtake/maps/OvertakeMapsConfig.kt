@@ -5,8 +5,17 @@ package dev.overtake.maps
 
 import java.io.File
 
-/** Which map backend [OvertakeMaps.create] wires up when it returns a [MapProvider.Native]. */
-enum class RendererKind { MAPLIBRE, OSMDROID }
+/**
+ * Which map backend [OvertakeMaps.create] wires up when it returns a [MapProvider.Native].
+ *
+ * - [MAPLIBRE] — GL vector + 3D; the premium look, proven to render clean AND screen-OFF on the
+ *   off-screen encoder host (the default).
+ * - [OSMDROID] — classic online raster via `android.graphics.Canvas`; renders screen-OFF.
+ * - [MAPSFORGE] — offline VECTOR `.map` tiles, also via `android.graphics.Canvas` (NOT GL), so it
+ *   keeps the screen-OFF behaviour of the raster engine but with vector quality. When the rider has
+ *   no `.map` yet it degrades gracefully to the [OSMDROID] online raster.
+ */
+enum class RendererKind { MAPLIBRE, OSMDROID, MAPSFORGE }
 
 /**
  * Everything Overtake needs from the host to build a [MapProvider]. All map-stack tunables live here

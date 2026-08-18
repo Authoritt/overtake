@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import dev.overtake.maps.R
 import dev.overtake.maps.model.MapPlace
 import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.tileprovider.MapTileProviderBase
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
@@ -29,9 +30,15 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Reliable raster dash map (osmdroid / Canvas tiles). This is the backend that renders cleanly to an
- * off-screen host window when a GL surface can't be trusted; it is one of the two engines [DashMapEngine]
+ * Reliable Canvas dash map on an osmdroid [MapView]. This is the backend that renders cleanly to an
+ * off-screen host window when a GL surface can't be trusted; it is one of the engines [DashMapEngine]
  * fans calls out to. Day starts un-tinted; the host drives day/night via [applyTheme].
+ *
+ * The tile SOURCE is pluggable via [tileProvider]: null = the online osmdroid raster (MAPNIK);
+ * non-null = a caller-supplied provider, i.e. the Mapsforge offline VECTOR provider from
+ * [MapsforgeController]. Either way the MapView, route lines, puck, follow camera and day/night
+ * handling are IDENTICAL — they are osmdroid overlays, so the renderer swap is a tile-source swap
+ * only, and Mapsforge inherits the raster engine's screen-OFF behaviour (both draw via Canvas).
  *
  * `GeoPoint` here is deliberately [org.osmdroid.util.GeoPoint] (the osmdroid map type), NOT the library's
  * neutral `dev.overtake.maps.model.GeoPoint`; the two names are kept distinct by importing only the
@@ -40,8 +47,20 @@ import kotlin.math.sin
 internal class DashMapController(
     private val context: Context,
     host: ViewGroup,
+    /**
+     * Optional pre-built tile provider. null (default) = online osmdroid raster (MAPNIK); non-null =
+     * the Mapsforge offline vector provider ([MapsforgeController.buildTileProvider]). When supplied,
+     * MAPNIK is NOT set (that would clobber the provider's own vector tile source).
+     */
+    tileProvider: MapTileProviderBase? = null,
 ) {
-    private val map: MapView = GpxOsmdroid.createMapView(context).also { m ->
+    private val map: MapView = (
+        if (tileProvider != null) {
+            GpxOsmdroid.createMapView(context, tileProvider)
+        } else {
+            GpxOsmdroid.createMapView(context)
+        }
+        ).also { m ->
         host.addView(
             m,
             0,
@@ -50,7 +69,9 @@ internal class DashMapController(
                 ViewGroup.LayoutParams.MATCH_PARENT,
             ),
         )
-        m.setTileSource(TileSourceFactory.MAPNIK)
+        // Online raster uses MAPNIK; the Mapsforge provider carries its OWN (vector) tile source, so
+        // setting MAPNIK here would clobber it — only set it for the default raster path.
+        if (tileProvider == null) m.setTileSource(TileSourceFactory.MAPNIK)
         m.setMultiTouchControls(true)
         m.setUseDataConnection(true)
         m.isTilesScaledToDpi = true
