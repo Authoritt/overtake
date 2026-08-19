@@ -7,13 +7,16 @@ import android.content.Context
 import dev.overtake.maps.MapsLog
 import dev.overtake.maps.OvertakeMapsConfig
 import dev.overtake.maps.contract.PlaceSearch
+import dev.overtake.maps.contract.SearchIntent
 import dev.overtake.maps.model.GeoPoint
 import dev.overtake.maps.model.MapPlace
 import dev.overtake.maps.model.PoiChip
 import dev.overtake.maps.net.OvertakeHttp
+import dev.overtake.maps.net.RequestPacer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
@@ -34,6 +37,10 @@ import kotlin.coroutines.resume
  * byte-for-byte identical list. It deliberately does NOT cap the result (no `take(12)`): the fork adds
  * its own places to this pool and applies the final top-N, so truncating here would drop a network row
  * that a local dedupe-collision would otherwise have surfaced.
+ *
+ * This class also owns the PROVIDER POLICY and the request pacing for the expensive provider — see
+ * [query]. The merge/rank/dedupe below is untouched by either: they only decide whether Nominatim's
+ * rows are among the inputs at all.
  */
 internal class PlaceSearchImpl(
     private val config: OvertakeMapsConfig,
@@ -50,21 +57,80 @@ internal class PlaceSearchImpl(
 
     override val poiChips: List<PoiChip> = NominatimSearch.POI_CHIPS
 
-    override suspend fun query(text: String, near: GeoPoint?): List<MapPlace> {
+    /**
+     * The once-a-second Nominatim slot (see [query]). One pacer per backend instance, which is one
+     * per search overlay — the wire-level [OvertakeHttp.throttle] inside [NominatimSearch] remains
+     * the process-wide backstop.
+     */
+    private val nominatimPacer = RequestPacer(NOMINATIM_MIN_INTERVAL_MS)
+
+    /**
+     * Free-text search. WHICH providers run is decided by [intent], never by timing:
+     *
+     *  - [SearchIntent.TYPEAHEAD] — the rider is typing. Platform Geocoder + Photon only. Nominatim
+     *    is not contacted, because the OSMF usage policy
+     *    (https://operations.osmfoundation.org/policies/nominatim/) states: "Auto-complete search:
+     *    This is not yet supported by Nominatim and you must not implement such a service on the
+     *    client side using the API." A debounce or a rate limit does NOT make it compliant — this is
+     *    a categorical rule, and the price of breaking it is OSMF blocking the endpoint for every
+     *    rider running the app.
+     *  - [SearchIntent.SUBMIT] — the rider explicitly asked (keyboard search/go key, search button,
+     *    a destination sent from the phone). One deliberate action, one Nominatim request, merged
+     *    and ranked with the rest.
+     *
+     * The [nominatimPacer] then keeps even those explicit calls to the ~1 request/second the policy
+     * allows. It is a WAIT, not a drop: if the slot is still closed we [delay] the remainder, which
+     * is cancellable — leaving the search screen or firing a new search kills the coroutine and the
+     * request is never made. A query already in the library's LRU skips the wait entirely (nothing
+     * leaves the device). Only a genuine race for the slot degrades a SUBMIT to Photon-only.
+     */
+    override suspend fun query(text: String, near: GeoPoint?, intent: SearchIntent): List<MapPlace> {
         val q = text.trim()
         if (q.isEmpty()) return emptyList()
         val nearLat = near?.lat
         val nearLon = near?.lon
+        // The rider's own country, for Nominatim's `countrycodes` (SUBMIT only — it is a Nominatim
+        // param). Non-blocking: unknown on the first search, resolved in the background for the next.
+        val countryCodes = if (intent == SearchIntent.SUBMIT && nearLat != null && nearLon != null) {
+            RiderCountry.codeFor(appContext, nearLat, nearLon)
+        } else {
+            null
+        }
+        val cached = nearLat != null && nearLon != null &&
+            NominatimSearch.cachedBiased(q, nearLat, nearLon, intent, countryCodes) != null
+        // TYPEAHEAD never asks for the slot: it is not allowed to spend it.
+        val useNominatim = when {
+            intent != SearchIntent.SUBMIT -> false
+            cached -> true
+            else -> {
+                val wait = nominatimPacer.waitMs()
+                if (wait > 0L) delay(wait)
+                nominatimPacer.take()
+            }
+        }
+        // A SUBMIT that lost the race for the slot is downgraded to a typeahead-grade query, so the
+        // "no Nominatim" decision is expressed ONCE, in the intent the backend receives.
+        val effectiveIntent = if (intent == SearchIntent.SUBMIT && !useNominatim) {
+            SearchIntent.TYPEAHEAD
+        } else {
+            intent
+        }
         return coroutineScope {
             // Both network sources run off the caller's thread, concurrently; each degrades to empty on
             // failure so a dead source never sinks the search (identical to the fork's additive merge).
             val geoDeferred = async(Dispatchers.IO) { geocode(q, nearLat, nearLon) }
             val nomDeferred = async(Dispatchers.IO) {
-                runCatching { NominatimSearch.search(q, nearLat, nearLon, includeNominatim = true) }
-                    .getOrElse { err ->
-                        MapsLog.w("cockpit-search", "$err")
-                        emptyList()
-                    }
+                runCatching {
+                    NominatimSearch.search(
+                        q, nearLat, nearLon,
+                        intent = effectiveIntent,
+                        includeNominatim = useNominatim,
+                        countryCodes = countryCodes,
+                    )
+                }.getOrElse { err ->
+                    MapsLog.w("cockpit-search", "geocoders failed (intent=$effectiveIntent): $err")
+                    emptyList()
+                }
             }
             mergeRanked(q, nearLat, nearLon, geoDeferred.await(), nomDeferred.await())
         }
@@ -116,5 +182,15 @@ internal class PlaceSearchImpl(
         val out = ArrayList<MapPlace>(ranked.size)
         for (p in ranked) if (seen.add(NominatimSearch.dedupeKey(p))) out.add(p)
         return out
+    }
+
+    private companion object {
+        /**
+         * Nominatim's public usage policy is "no more than 1 request per second, absolute maximum".
+         * 1.1 s leaves headroom for clock granularity and matches the wire-level throttle in
+         * [NominatimSearch] — the two agree so the pacer never hands out a slot the throttle would
+         * then sleep on.
+         */
+        const val NOMINATIM_MIN_INTERVAL_MS = 1_100L
     }
 }

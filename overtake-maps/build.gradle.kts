@@ -48,6 +48,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    testOptions {
+        // Plain-JVM unit tests for the PURE logic (search URL building, request pacing). android.jar
+        // methods are stubs there; returning defaults instead of throwing keeps an incidental
+        // android type inert rather than exploding the test — same setting the cockpit fork uses.
+        unitTests.isReturnDefaultValues = true
+    }
+
     // Expose a SINGLE variant (release) as the Maven component, with a matching sources jar. This is
     // AGP's first-party publishing (no fat-aar plugin), so it stays robust on AGP 9.x. The publication
     // that consumes components["release"] is registered in afterEvaluate below — AGP only creates that
@@ -98,6 +105,10 @@ dependencies {
     // androidx.core — ContextCompat.getDrawable() for the renderer's puck / destination-pin bitmaps
     // (same version the :overtake reader module pins).
     implementation("androidx.core:core-ktx:1.18.0")
+
+    // Plain-JVM unit tests (same JUnit 4 the consuming cockpit fork uses). Only the PURE seams are
+    // covered here — the ones a wrong answer in would silently ship a bad request URL.
+    testImplementation("junit:junit:4.13.2")
 }
 
 // ── Maven publication ────────────────────────────────────────────────────────────────────────────

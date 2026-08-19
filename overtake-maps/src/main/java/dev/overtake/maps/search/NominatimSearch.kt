@@ -4,6 +4,7 @@
 package dev.overtake.maps.search
 
 import dev.overtake.maps.MapsLog
+import dev.overtake.maps.contract.SearchIntent
 import dev.overtake.maps.model.MapPlace
 import dev.overtake.maps.model.PoiChip
 import dev.overtake.maps.net.OvertakeHttp
@@ -22,12 +23,31 @@ import kotlin.math.sqrt
  * Uses Photon (location-biased) + settlement query so short prefixes prefer major
  * nearby cities over tiny locals / far-away name collisions. No region hardcoding.
  *
+ * WHICH PROVIDER RUNS IS A POLICY DECISION, taken from the caller's [SearchIntent], never from the
+ * shape or timing of the query. Photon serves the as-you-type path; Nominatim serves only an
+ * explicit rider action, because the OSMF usage policy
+ * (https://operations.osmfoundation.org/policies/nominatim/) says: "Auto-complete search: This is
+ * not yet supported by Nominatim and you must not implement such a service on the client side using
+ * the API." Anything that would reach Nominatim from a keystroke — including the "Photon came back
+ * empty" fallback — is gated on that flag inside [search].
+ *
  * Extracted VERBATIM from the OpenCfMoto fork (behaviour byte-for-byte identical to search-parity);
  * the only edits are the module seams — `AppHttp.*` -> [OvertakeHttp] and the `LogBus` sink -> [MapsLog]
  * — and the neutral [MapPlace] / [PoiChip] model types. The scorer ([relevance] / [matchScore] / the
  * fuzzy [fold] / [dedupe]) is the single source of truth the cockpit search overlay ranks against.
  */
 object NominatimSearch {
+
+    // ── Per-provider network budgets ─────────────────────────────────────────────────────────────
+    // Deliberately asymmetric. Photon answers in a few hundred ms and is the one that has to keep up
+    // with typing, so it keeps a SHORT leash. Nominatim is the slow, precise one — the measured
+    // failure was a read timeout on a normal query at the old shared 10 s default, so it gets real
+    // headroom (and, when the query has settled, one short retry — see [searchNominatimRetrying]).
+    private const val PHOTON_CONNECT_MS = 5_000
+    private const val PHOTON_READ_MS = 6_000
+    private const val NOMINATIM_CONNECT_MS = 10_000
+    private const val NOMINATIM_READ_MS = 20_000
+    private const val NOMINATIM_RETRY_READ_MS = 10_000
 
     val POI_CHIPS = listOf(
         PoiChip("Fuel", "amenity=fuel"),
@@ -40,17 +60,24 @@ object NominatimSearch {
         PoiChip("Viewpoint", "tourism=viewpoint"),
     )
 
+    /**
+     * @param intent REQUIRED, no default: every caller must declare whether the rider is TYPING or
+     *   has EXPLICITLY asked, because that is what decides whether Nominatim may be contacted at all
+     *   (see [SearchIntent] and [search]). A default would let the next call site silently inherit
+     *   the wrong one — this is the compile-time guard that keeps autocomplete off Nominatim.
+     */
     fun searchAsync(
         query: String,
         nearLat: Double? = null,
         nearLon: Double? = null,
+        intent: SearchIntent,
         includeNominatim: Boolean = false,
         onResult: (List<MapPlace>) -> Unit,
         onError: (String) -> Unit,
     ) {
         thread(name = "place-search") {
             try {
-                onResult(search(query, nearLat, nearLon, includeNominatim))
+                onResult(search(query, nearLat, nearLon, intent, includeNominatim))
             } catch (e: Exception) {
                 onError(e.message ?: "Search failed")
             }
@@ -58,19 +85,30 @@ object NominatimSearch {
     }
 
     /**
-     * @param includeNominatim when biased (nearLat/nearLon given), also fetch Nominatim and rank it
-     *   TOGETHER with Photon instead of only falling back to it when Photon is empty. Photon is
-     *   POI/settlement-first and can return a nearby-but-wrong hit for a specific local street or
-     *   barrio (measured: "rincón de la flora 1" in Cali — Photon returns unrelated places, so the
-     *   real Nominatim result was never fetched and the search "missed" a place Google finds). Off by
-     *   default so the dash/other callers are byte-for-byte unchanged; the in-cockpit search opts in.
-     *   No effect on the unbiased path, which already queries Nominatim directly.
+     * @param intent WHO asked. [SearchIntent.TYPEAHEAD] (the rider is typing) is served by Photon
+     *   alone — Nominatim is not contacted, not even as a fallback when Photon returns nothing —
+     *   because the OSMF usage policy (https://operations.osmfoundation.org/policies/nominatim/)
+     *   states: "Auto-complete search: This is not yet supported by Nominatim and you must not
+     *   implement such a service on the client side using the API." Only [SearchIntent.SUBMIT] — an
+     *   explicit action by the rider, one request per action — may use it.
+     * @param includeNominatim ranking strategy for a SUBMIT, orthogonal to the policy above: fetch
+     *   Nominatim and rank it TOGETHER with Photon instead of only falling back to it when Photon is
+     *   empty. Photon is POI/settlement-first and can return a nearby-but-wrong hit for a specific
+     *   local street or barrio (measured: "rincón de la flora 1" in Cali — Photon returns unrelated
+     *   places, so the real Nominatim result was never fetched and the search "missed" a place Google
+     *   finds). Off by default so the dash/other callers are byte-for-byte unchanged; the in-cockpit
+     *   search opts in. Ignored entirely under TYPEAHEAD.
+     * @param countryCodes optional ISO 3166-1 alpha-2 restriction for Nominatim, which the caller
+     *   derives from the rider's own position ([RiderCountry]) — never a hardcoded market. A
+     *   restricted query that comes back EMPTY is automatically widened (see [searchNominatimRetrying]).
      */
     fun search(
         query: String,
         nearLat: Double? = null,
         nearLon: Double? = null,
+        intent: SearchIntent,
         includeNominatim: Boolean = false,
+        countryCodes: String? = null,
     ): List<MapPlace> {
         val raw = query.trim()
         if (raw.isEmpty()) return emptyList()
@@ -79,32 +117,59 @@ object NominatimSearch {
         // single expanded query feeds both and the ranker, so the cache key is the expanded form too.
         val q = expandQuery(raw)
 
-        val cacheKey = cacheKey(q, nearLat, nearLon, includeNominatim)
+        // THE policy gate — one boolean, one place. Everything below asks this, never the timing.
+        val mayUseNominatim = intent == SearchIntent.SUBMIT
+        val countries = if (mayUseNominatim) countryCodes else null
+
+        val cacheKey = cacheKey(q, nearLat, nearLon, mayUseNominatim, includeNominatim, countries)
         cacheGet(cacheKey)?.let { return it }
 
         val result = if (nearLat != null && nearLon != null) {
-            if (includeNominatim) {
-                // Merge both sources so a specific local address (Nominatim) is never shadowed by
-                // Photon's nearby-but-wrong POIs; rankScored then orders by distance + name + type.
-                val photon = runCatching { photonScored(q, nearLat, nearLon) }.getOrElse { err ->
-                    MapsLog.w("search", "Photon failed: $err")
+            val photonBiased = {
+                runCatching { searchPhotonBiased(q, nearLat, nearLon) }.getOrElse { err ->
+                    MapsLog.w("search", "Photon failed (q=${q.length} chars): $err")
                     emptyList()
                 }
-                val nominatim = runCatching { searchNominatim(q, nearLat, nearLon) }.getOrElse { err ->
-                    MapsLog.w("search", "Nominatim failed: $err")
-                    emptyList()
-                }
-                rankScored(photon + nominatim, q, nearLat, nearLon)
-            } else {
-                val photon = runCatching { searchPhotonBiased(q, nearLat, nearLon) }.getOrElse { err ->
-                    MapsLog.w("search", "Photon failed: $err")
-                    emptyList()
-                }
-                if (photon.isNotEmpty()) photon
-                else rankScored(searchNominatim(q, nearLat, nearLon), q, nearLat, nearLon)
             }
+            when {
+                // Typing: Photon (built for autocomplete) and nothing else. If it is empty, the
+                // answer is empty — the fallback below would be an autocomplete hit on Nominatim.
+                !mayUseNominatim -> photonBiased()
+                includeNominatim -> {
+                    // Merge both sources so a specific local address (Nominatim) is never shadowed by
+                    // Photon's nearby-but-wrong POIs; rankScored then orders by distance + name + type.
+                    val photon = runCatching { photonScored(q, nearLat, nearLon) }.getOrElse { err ->
+                        MapsLog.w("search", "Photon failed (q=${q.length} chars): $err")
+                        emptyList()
+                    }
+                    // Already logged per attempt inside (provider + reason + context); swallow here so
+                    // a dead Nominatim never sinks the search.
+                    val nominatim = runCatching {
+                        searchNominatimRetrying(q, nearLat, nearLon, countries, settled = true)
+                    }.getOrElse { emptyList() }
+                    rankScored(photon + nominatim, q, nearLat, nearLon)
+                }
+                else -> {
+                    val photon = photonBiased()
+                    // Photon came back empty on an EXPLICIT search: Nominatim is the last chance to
+                    // show the rider anything, so it is worth the retry.
+                    if (photon.isNotEmpty()) photon
+                    else rankScored(
+                        searchNominatimRetrying(q, nearLat, nearLon, countries, settled = true),
+                        q, nearLat, nearLon,
+                    )
+                }
+            }
+        } else if (mayUseNominatim) {
+            rankScored(searchNominatimRetrying(q, nearLat, nearLon, countries, settled = true), q, nearLat, nearLon)
         } else {
-            rankScored(searchNominatim(q, nearLat, nearLon), q, nearLat, nearLon)
+            // No rider fix AND the rider is typing: Photon unbiased is the only policy-clean source.
+            val photon = runCatching { fetchPhoton(q, null, null, limit = 12, settlementsOnly = false) }
+                .getOrElse { err ->
+                    MapsLog.w("search", "Photon failed (q=${q.length} chars, unbiased): $err")
+                    emptyList()
+                }
+            rankScored(photon, q, null, null)
         }
         if (result.isNotEmpty()) cachePut(cacheKey, result)
         return result
@@ -117,9 +182,27 @@ object NominatimSearch {
             size > CACHE_MAX
     }
 
-    private fun cacheKey(q: String, lat: Double?, lon: Double?, includeNominatim: Boolean): String {
+    /**
+     * One entry per (query, rider cell, PROVIDER SET). The provider set is part of the key because a
+     * typeahead answer (Photon only) and a submitted answer (Photon + Nominatim, possibly restricted
+     * to a country) are different lists — sharing a key would let the cheap one shadow the precise
+     * one, which is the bug this whole change exists to kill.
+     */
+    private fun cacheKey(
+        q: String,
+        lat: Double?,
+        lon: Double?,
+        mayUseNominatim: Boolean,
+        includeNominatim: Boolean,
+        countryCodes: String?,
+    ): String {
         val near = if (lat != null && lon != null) "%.2f,%.2f".format(lat, lon) else "-"
-        return "${q.lowercase()}|$near|${if (includeNominatim) "n1" else "n0"}"
+        val providers = when {
+            !mayUseNominatim -> "photon"
+            includeNominatim -> "merged"
+            else -> "fallback"
+        }
+        return "${q.lowercase()}|$near|$providers|${countryCodes ?: "-"}"
     }
 
     private fun cacheGet(key: String): List<MapPlace>? = synchronized(cache) { cache[key] }
@@ -139,24 +222,26 @@ object NominatimSearch {
     private fun searchPhotonBiased(query: String, nearLat: Double, nearLon: Double): List<MapPlace> =
         rankScored(photonScored(query, nearLat, nearLon), query, nearLat, nearLon)
 
+    /** [nearLat]/[nearLon] null = no bias and no box (a caller with no rider fix). */
     private fun fetchPhoton(
         query: String,
-        nearLat: Double,
-        nearLon: Double,
+        nearLat: Double?,
+        nearLon: Double?,
         limit: Int,
         settlementsOnly: Boolean,
     ): List<ScoredPlace> {
-        val enc = OvertakeHttp.encode(query)
-        val bias = if (settlementsOnly) 0.12 else 0.2
-        var url =
-            "https://photon.komoot.io/api/?q=$enc&lat=$nearLat&lon=$nearLon&limit=$limit" +
-                "&location_bias_scale=$bias&lang=default"
-        if (settlementsOnly) {
-            url += "&osm_tag=place:city&osm_tag=place:town&osm_tag=place:municipality"
-        }
+        // URL (incl. the rider box) built by SearchUrls — see there for the params and the measured
+        // wrong-country case that made the hard `bbox` necessary.
+        val url = SearchUrls.photon(query, nearLat, nearLon, limit, settlementsOnly)
         OvertakeHttp.throttle("photon.komoot.io", 300)
         run {
-            val root = JSONObject(OvertakeHttp.getText(url))
+            val root = JSONObject(
+                OvertakeHttp.getText(
+                    url,
+                    connectTimeoutMs = PHOTON_CONNECT_MS,
+                    readTimeoutMs = PHOTON_READ_MS,
+                ),
+            )
             val features = root.optJSONArray("features") ?: JSONArray()
             return buildList {
                 for (i in 0 until features.length()) {
@@ -191,23 +276,100 @@ object NominatimSearch {
         }
     }
 
+    /**
+     * Nominatim for an EXPLICIT search, with a retry and a widening.
+     *
+     * Attempt 1 gets a generous budget because the public server is
+     * genuinely slow (the measured failure was a read timeout on a perfectly normal query, which is
+     * what left the rider with a Photon-only, wrong-country list). If it still fails on something
+     * retryable — timeout / transport error / 429 / 5xx — we try ONCE more on a SHORT leash: a first
+     * attempt that already burned [NOMINATIM_READ_MS] means the server is struggling and the rider
+     * is waiting, so the second chance must be quick or not at all. A 4xx (bad query) never retries.
+     *
+     * Then the WIDENING: a [countryCodes] restriction that yields zero rows is retried once without
+     * it (see below) — the restriction is a guess about where the rider is, and a guess must not be
+     * able to turn "not here" into "nowhere".
+     *
+     * Every failure is logged with the PROVIDER, the reason, the query length, the country
+     * restriction and whether the query had settled — the `[search] Nominatim failed: ...` line is
+     * what cracked this case, so it keeps that quality and gains the context that was missing.
+     */
+    private fun searchNominatimRetrying(
+        query: String,
+        nearLat: Double?,
+        nearLon: Double?,
+        countryCodes: String?,
+        settled: Boolean,
+    ): List<ScoredPlace> {
+        val restricted = attemptNominatim(query, nearLat, nearLon, countryCodes, settled)
+        if (restricted.isNotEmpty() || SearchUrls.normalizeCountryCodes(countryCodes) == null) {
+            return restricted
+        }
+        // The country restriction is the only HARD filter we send, and the rider's country is a
+        // guess from a reverse geocode — near a border, or for a destination abroad, it can be the
+        // wrong one. Zero rows inside it is not "no such place": widen ONCE, unrestricted, no retry.
+        // Still one deliberate action by the rider, so this stays inside the usage policy.
+        MapsLog.w(
+            "search",
+            "Nominatim: 0 rows inside countrycodes=$countryCodes (q=${query.length} chars) — widening once",
+        )
+        return attemptNominatim(query, nearLat, nearLon, null, settled = false)
+    }
+
+    /** One Nominatim query with the retry policy described on [searchNominatimRetrying]. */
+    private fun attemptNominatim(
+        query: String,
+        nearLat: Double?,
+        nearLon: Double?,
+        countryCodes: String?,
+        settled: Boolean,
+    ): List<ScoredPlace> {
+        val attempts = if (settled) 2 else 1
+        var last: Exception? = null
+        for (attempt in 1..attempts) {
+            val readMs = if (attempt == 1) NOMINATIM_READ_MS else NOMINATIM_RETRY_READ_MS
+            try {
+                return searchNominatim(query, nearLat, nearLon, countryCodes, readMs)
+            } catch (e: Exception) {
+                last = e
+                val retryable = when (e) {
+                    is OvertakeHttp.HttpException -> e.retryable
+                    is java.io.IOException -> true // incl. SocketTimeoutException — the measured one
+                    else -> false // malformed JSON etc: retrying just costs the server another hit
+                }
+                MapsLog.w(
+                    "search",
+                    "Nominatim failed (attempt $attempt/$attempts, q=${query.length} chars, " +
+                        "settled=$settled, countries=${countryCodes ?: "-"}, retryable=$retryable): " +
+                        "${e.javaClass.simpleName}: ${e.message}",
+                )
+                if (!retryable) break
+            }
+        }
+        throw last ?: IllegalStateException("Nominatim: no attempt was made")
+    }
+
     private fun searchNominatim(
         query: String,
         nearLat: Double?,
         nearLon: Double?,
+        countryCodes: String?,
+        readTimeoutMs: Int = NOMINATIM_READ_MS,
     ): List<ScoredPlace> {
-        val enc = OvertakeHttp.encode(query)
-        var url =
-            "https://nominatim.openstreetmap.org/search?q=$enc&format=jsonv2&addressdetails=1&limit=20"
-        if (nearLat != null && nearLon != null) {
-            // Soft regional preference (~180 km); bounded=0 still allows farther matches.
-            val d = 1.6
-            url += "&viewbox=${nearLon - d},${nearLat + d},${nearLon + d},${nearLat - d}&bounded=0"
-        }
-        // Nominatim usage policy: at most 1 request/second from a single source.
+        // URL (viewbox + accept-language + countrycodes) built by SearchUrls — params documented there.
+        val url = SearchUrls.nominatim(query, nearLat, nearLon, countryCodes = countryCodes)
+        // Nominatim usage policy: at most 1 request/second from a single source. This is the
+        // wire-level backstop; the caller-side pacing that stops superseded keystrokes from ever
+        // reaching here lives in RequestPacer (used by PlaceSearchImpl).
         OvertakeHttp.throttle("nominatim.openstreetmap.org", 1_100)
         run {
-            val arr = JSONArray(OvertakeHttp.getText(url))
+            val arr = JSONArray(
+                OvertakeHttp.getText(
+                    url,
+                    connectTimeoutMs = NOMINATIM_CONNECT_MS,
+                    readTimeoutMs = readTimeoutMs,
+                ),
+            )
             return buildList {
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
@@ -335,11 +497,22 @@ object NominatimSearch {
         }
     }
 
-    /** Previously-ranked biased result for [query], if still cached — lets the overlay paint instantly. */
-    fun cachedBiased(query: String, nearLat: Double, nearLon: Double): List<MapPlace>? {
+    /**
+     * Previously-ranked result for [query], if still cached — lets the overlay paint instantly.
+     * [intent] must match the one the answer was fetched with (a typeahead list and a submitted list
+     * are cached apart, see [cacheKey]); [countryCodes] likewise.
+     */
+    fun cachedBiased(
+        query: String,
+        nearLat: Double,
+        nearLon: Double,
+        intent: SearchIntent,
+        countryCodes: String? = null,
+    ): List<MapPlace>? {
         val q = expandQuery(query.trim())
         if (q.isEmpty()) return null
-        return cacheGet(cacheKey(q, nearLat, nearLon, true))
+        val may = intent == SearchIntent.SUBMIT
+        return cacheGet(cacheKey(q, nearLat, nearLon, may, may, if (may) countryCodes else null))
     }
 
     /** OSM class-type weight (0..100) plus the source `importance`, capped — the prominence term. */

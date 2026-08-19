@@ -13,8 +13,20 @@ import dev.overtake.maps.model.PoiChip
  */
 interface PlaceSearch {
 
-    /** Free-text geocode; [near] biases ranking toward the rider when given. */
-    suspend fun query(text: String, near: GeoPoint? = null): List<MapPlace>
+    /**
+     * Free-text geocode; [near] biases ranking toward the rider when given.
+     *
+     * [intent] says what the rider DID, and that decides which providers may run — see [SearchIntent]
+     * for the Nominatim usage policy this enforces
+     * (https://operations.osmfoundation.org/policies/nominatim/). It defaults to the SAFE value:
+     * a caller who says nothing is assumed to be typing, so forgetting the argument can only ever
+     * under-use a provider, never break the policy.
+     */
+    suspend fun query(
+        text: String,
+        near: GeoPoint? = null,
+        intent: SearchIntent = SearchIntent.TYPEAHEAD,
+    ): List<MapPlace>
 
     /** All places of a POI category ([chip]) around [near]. */
     suspend fun poi(chip: PoiChip, near: GeoPoint): List<MapPlace>
